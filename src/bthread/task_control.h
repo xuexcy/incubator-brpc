@@ -47,7 +47,7 @@ public:
 
     // Must be called before using. `nconcurrency' is # of worker pthreads.
     int init(int nconcurrency);
-    
+
     // Create a TaskGroup in this control.
     TaskGroup* create_group();
 
@@ -59,9 +59,9 @@ public:
 
     // Stop and join worker threads in TaskControl.
     void stop_and_join();
-    
+
     // Get # of worker threads.
-    int concurrency() const 
+    int concurrency() const
     { return _concurrency.load(butil::memory_order_acquire); }
 
     void print_rq_sizes(std::ostream& os);
@@ -96,8 +96,8 @@ private:
     butil::Mutex _modify_group_mutex;
 
     bool _stop;
-    butil::atomic<int> _concurrency;
-    std::vector<pthread_t> _workers;
+    butil::atomic<int> _concurrency; // 需要创建的worker的数量, 等于_workers.size()
+    std::vector<pthread_t> _workers; // worker调度bthread
 
     bvar::Adder<int64_t> _nworkers;
     butil::Mutex _pending_time_mutex;
