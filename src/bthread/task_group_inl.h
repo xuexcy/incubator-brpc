@@ -61,7 +61,7 @@ inline void TaskGroup::exchange(TaskGroup** pg, bthread_t next_tid) {
 
 inline void TaskGroup::sched_to(TaskGroup** pg, bthread_t next_tid) {
     TaskMeta* next_meta = address_meta(next_tid);
-    if (next_meta->stack == NULL) {
+    if (next_meta->stack == NULL) { // TODO(xuechengyun): 看看为什么没有栈空间
         ContextualStack* stk = get_stack(next_meta->stack_type(), task_runner);
         if (stk) {
             next_meta->set_stack(stk);

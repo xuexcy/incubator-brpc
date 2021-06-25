@@ -73,7 +73,7 @@ void* TaskControl::worker_thread(void* arg) {
 
     tls_task_group = g;
     c->_nworkers << 1;
-    g->run_main_task();
+    g->run_main_task(); // 死循环直到停止
 
     stat = g->main_stat();
     BT_VLOG << "Destroying worker=" << pthread_self() << " bthread="

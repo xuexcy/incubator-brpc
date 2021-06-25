@@ -57,7 +57,7 @@ const bool ALLOW_UNUSED dummy_show_per_worker_usage_in_vars =
     ::GFLAGS_NS::RegisterFlagValidator(&FLAGS_show_per_worker_usage_in_vars,
                                     pass_bool);
 
-__thread TaskGroup* tls_task_group = NULL;
+__thread TaskGroup* tls_task_group = NULL; // 线程内全局变量
 // Sync with TaskMeta::local_storage when a bthread is created or destroyed.
 // During running, the two fields may be inconsistent, use tls_bls as the
 // groundtruth.
@@ -149,12 +149,12 @@ void TaskGroup::run_main_task() {
 
     TaskGroup* dummy = this;
     bthread_t tid;
-    while (wait_task(&tid)) {
-        TaskGroup::sched_to(&dummy, tid);
+    while (wait_task(&tid)) { // tg在这里一直取task，不行就去其他tg偷,偷不到就死循环(除非被停下来),也就是说这个while在程序停之前一直是true
+        TaskGroup::sched_to(&dummy, tid); // 用新task_meta(tid)替换调tg中的旧task
         DCHECK_EQ(this, dummy);
         DCHECK_EQ(_cur_meta->stack, _main_stack);
         if (_cur_meta->tid != _main_tid) {
-            TaskGroup::task_runner(1/*skip remained*/);
+            TaskGroup::task_runner(1/*skip remained*/); // 执行新task_meta
         }
         if (FLAGS_show_per_worker_usage_in_vars && !usage_bvar) {
             char name[32];
@@ -169,7 +169,8 @@ void TaskGroup::run_main_task() {
                              (name, &cumulated_cputime, 1));
         }
     }
-    // Don't forget to add elapse of last wait_task.
+    // Don't forget to add elapse of last wait_task. (不要忘记记录最后一个task的执行时间)
+    // 上面while循环退出前的那个任务的累计执行时间, while循环里面的任务累计执行时间在sched_to里切换任务时有记录
     current_task()->stat.cputime_ns += butil::cpuwide_time_ns() - _last_run_ns;
 }
 
@@ -573,19 +574,19 @@ void TaskGroup::sched_to(TaskGroup** pg, TaskMeta* next_meta) {
     const int saved_errno = errno;
     void* saved_unique_user_ptr = tls_unique_user_ptr;
 
-    TaskMeta* const cur_meta = g->_cur_meta;
-    const int64_t now = butil::cpuwide_time_ns();
-    const int64_t elp_ns = now - g->_last_run_ns;
+    TaskMeta* const cur_meta = g->_cur_meta; // 当前的task_meta
+    const int64_t now = butil::cpuwide_time_ns(); // 当前时间
+    const int64_t elp_ns = now - g->_last_run_ns; // task_meta执行的时间
     g->_last_run_ns = now;
-    cur_meta->stat.cputime_ns += elp_ns;
+    cur_meta->stat.cputime_ns += elp_ns; // 当前task_meta累计执行时间
     if (cur_meta->tid != g->main_tid()) {
-        g->_cumulated_cputime_ns += elp_ns;
+        g->_cumulated_cputime_ns += elp_ns; // task_group中task_meta的累计执行时间
     }
-    ++cur_meta->stat.nswitch;
-    ++ g->_nswitch;
+    ++cur_meta->stat.nswitch; // task_meta在task_group中被切换走的次数+1
+    ++ g->_nswitch; // task_group中切换task_meta的次数+1
     // Switch to the task
-    if (__builtin_expect(next_meta != cur_meta, 1)) {
-        g->_cur_meta = next_meta;
+    if (__builtin_expect(next_meta != cur_meta, 1)) { // 开始切换执行next_meta
+        g->_cur_meta = next_meta; // 将next_meta做为当前task_group需要执行的task_meta
         // Switch tls_bls
         cur_meta->local_storage = tls_bls;
         tls_bls = next_meta->local_storage;
@@ -593,16 +594,16 @@ void TaskGroup::sched_to(TaskGroup** pg, TaskMeta* next_meta) {
         // Logging must be done after switching the local storage, since the logging lib
         // use bthread local storage internally, or will cause memory leak.
         if ((cur_meta->attr.flags & BTHREAD_LOG_CONTEXT_SWITCH) ||
-            (next_meta->attr.flags & BTHREAD_LOG_CONTEXT_SWITCH)) {
+            (next_meta->attr.flags & BTHREAD_LOG_CONTEXT_SWITCH)) { // TODO(xuechengyun):没看懂
             LOG(INFO) << "Switch bthread: " << cur_meta->tid << " -> "
                       << next_meta->tid;
         }
 
         if (cur_meta->stack != NULL) {
             if (next_meta->stack != cur_meta->stack) {
-                jump_stack(cur_meta->stack, next_meta->stack);
+                jump_stack(cur_meta->stack, next_meta->stack); // 汇编实现的用户态任务栈切换
                 // probably went to another group, need to assign g again.
-                g = tls_task_group;
+                g = tls_task_group; // TODO(xuechengyun): 为啥子这里会切换tg
             }
 #ifndef NDEBUG
             else {
@@ -617,7 +618,7 @@ void TaskGroup::sched_to(TaskGroup** pg, TaskMeta* next_meta) {
         LOG(FATAL) << "bthread=" << g->current_tid() << " sched_to itself!";
     }
 
-    while (g->_last_context_remained) {
+    while (g->_last_context_remained) { // TODO(xuechengyun): 这个remained是个啥
         RemainedFn fn = g->_last_context_remained;
         g->_last_context_remained = NULL;
         fn(g->_last_context_remained_arg);

@@ -93,7 +93,7 @@ public:
         _last_context_remained = cb;
         _last_context_remained_arg = arg;
     }
-    
+
     // Suspend caller for at least |timeout_us| microseconds.
     // If |timeout_us| is 0, this function does nothing.
     // If |group| is NULL or current thread is non-bthread, call usleep(3)
@@ -226,7 +226,7 @@ friend class TaskControl;
 #endif
 
     TaskMeta* _cur_meta;
-    
+
     // the control that this group belongs to
     TaskControl* _control;
     int _num_nosignal;
@@ -246,7 +246,7 @@ friend class TaskControl;
     size_t _steal_seed;
     size_t _steal_offset;
     ContextualStack* _main_stack;
-    bthread_t _main_tid;
+    bthread_t _main_tid; // TODO(xuechengyun):这玩意到底是干嘛的,又没有可执行任务
     WorkStealingQueue<bthread_t> _rq;
     RemoteTaskQueue _remote_rq;
     int _remote_num_nosignal;
