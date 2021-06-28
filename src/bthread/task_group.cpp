@@ -473,12 +473,12 @@ int TaskGroup::join(bthread_t tid, void** return_value) {
         return EINVAL;
     }
     TaskGroup* g = tls_task_group;
-    if (g != NULL && g->current_tid() == tid) {
+    if (g != NULL && g->current_tid() == tid) { // 自己不能join自己
         // joining self causes indefinite waiting.
         return EINVAL;
     }
     const uint32_t expected_version = get_version(tid);
-    while (*m->version_butex == expected_version) {
+    while (*m->version_butex == expected_version) { // TODO(xuechengyun)
         if (butex_wait(m->version_butex, expected_version, NULL) < 0 &&
             errno != EWOULDBLOCK && errno != EINTR) {
             return errno;

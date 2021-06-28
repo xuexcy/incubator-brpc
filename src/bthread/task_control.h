@@ -43,19 +43,19 @@ class TaskControl {
 
 public:
     TaskControl();
-    ~TaskControl();
+    ~TaskControl(); // TODO(xuechengyun)
 
     // Must be called before using. `nconcurrency' is # of worker pthreads.
-    int init(int nconcurrency);
+    int init(int nconcurrency); // xcy_done: 根据参数创建worker
 
     // Create a TaskGroup in this control.
-    TaskGroup* create_group();
+    TaskGroup* create_group(); // xcy_done
 
     // Steal a task from a "random" group.
-    bool steal_task(bthread_t* tid, size_t* seed, size_t offset);
+    bool steal_task(bthread_t* tid, size_t* seed, size_t offset); // xcy_done:由某个tg调用，偷取其他tg的_rq或_remote_rq中的task
 
     // Tell other groups that `n' tasks was just added to caller's runqueue
-    void signal_task(int num_task);
+    void signal_task(int num_task); // TODO
 
     // Stop and join worker threads in TaskControl.
     void stop_and_join();
@@ -72,7 +72,7 @@ public:
 
     // [Not thread safe] Add more worker threads.
     // Return the number of workers actually added, which may be less than |num|
-    int add_workers(int num);
+    int add_workers(int num); // xcy_done:新建worker,和init中创建的worker一个意思
 
     // Choose one TaskGroup (randomly right now).
     // If this method is called after init(), it never returns NULL.
@@ -81,25 +81,26 @@ public:
 private:
     // Add/Remove a TaskGroup.
     // Returns 0 on success, -1 otherwise.
-    int _add_group(TaskGroup*);
-    int _destroy_group(TaskGroup*);
+    int _add_group(TaskGroup*); // xcy_done: 记录新的tg
+    int _destroy_group(TaskGroup*); // xcy_done: 删除对这个tg的记录
 
-    static void delete_task_group(void* arg);
+    static void delete_task_group(void* arg); // xcy_done: delete arg
 
-    static void* worker_thread(void* task_control);
+    static void* worker_thread(void* task_control); // xcy_done:创建tg并执行tg中的task(死循环)
 
     bvar::LatencyRecorder& exposed_pending_time();
     bvar::LatencyRecorder* create_exposed_pending_time();
 
-    butil::atomic<size_t> _ngroup;
-    TaskGroup** _groups;
-    butil::Mutex _modify_group_mutex;
+    // 下面的group、worker的数量等价于创建的task_group的数量
+    butil::atomic<size_t> _ngroup; // 已经创建的worker数量
+    TaskGroup** _groups; // tg数组
+    butil::Mutex _modify_group_mutex; // 修改_groups需要的mutex
 
-    bool _stop;
-    butil::atomic<int> _concurrency; // 需要创建的worker的数量, 等于_workers.size()
-    std::vector<pthread_t> _workers; // worker调度bthread
+    bool _stop; // tc是否停止的标记
+    butil::atomic<int> _concurrency; // 需要创建的worker的数量,用户传入的参数
+    std::vector<pthread_t> _workers; // worker中运行着tg
 
-    bvar::Adder<int64_t> _nworkers;
+    bvar::Adder<int64_t> _nworkers; // 创建的worker数量，新建就<<1, 删除就>>1
     butil::Mutex _pending_time_mutex;
     butil::atomic<bvar::LatencyRecorder*> _pending_time;
     bvar::PassiveStatus<double> _cumulated_worker_time;

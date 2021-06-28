@@ -219,7 +219,7 @@ TimerThread::Bucket::schedule(void (*fn)(void*), void* arg,
     return result;
 }
 
-TimerThread::TaskId TimerThread::schedule( // TODO(xuechengyun):找到schedule的调用者
+TimerThread::TaskId TimerThread::schedule( // TODO(xuechengyun):找到schedule的调用者(1. tc在清理tg时，有个延时清理)
     void (*fn)(void*), void* arg, const timespec& abstime) {
     if (_stop.load(butil::memory_order_relaxed) || !_started) {
         // Not add tasks when TimerThread is about to stop.

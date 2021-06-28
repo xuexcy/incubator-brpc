@@ -62,7 +62,7 @@ void* TaskControl::worker_thread(void* arg) {
 #endif
 
     TaskControl* c = static_cast<TaskControl*>(arg);
-    TaskGroup* g = c->create_group();
+    TaskGroup* g = c->create_group(); // 创建tg
     TaskStatistics stat;
     if (NULL == g) {
         LOG(ERROR) << "Fail to create TaskGroup in pthread=" << pthread_self();
@@ -72,7 +72,7 @@ void* TaskControl::worker_thread(void* arg) {
             << " bthread=" << g->main_tid();
 
     tls_task_group = g;
-    c->_nworkers << 1;
+    c->_nworkers << 1; // workers/tg数量+1 TODO(xuechengyun): 为什么是 << 1
     g->run_main_task(); // 死循环直到停止
 
     stat = g->main_stat();
@@ -81,22 +81,22 @@ void* TaskControl::worker_thread(void* arg) {
             << "ms uptime=" << g->current_uptime_ns() / 1000000.0 << "ms";
     tls_task_group = NULL;
     g->destroy_self();
-    c->_nworkers << -1;
+    c->_nworkers << -1; // worker数量减1
     return NULL;
 }
 
 TaskGroup* TaskControl::create_group() {
-    TaskGroup* g = new (std::nothrow) TaskGroup(this);
+    TaskGroup* g = new (std::nothrow) TaskGroup(this); // 构造tg
     if (NULL == g) {
         LOG(FATAL) << "Fail to new TaskGroup";
         return NULL;
     }
-    if (g->init(FLAGS_task_group_runqueue_capacity) != 0) {
+    if (g->init(FLAGS_task_group_runqueue_capacity) != 0) { // 初始化tg
         LOG(ERROR) << "Fail to init TaskGroup";
         delete g;
         return NULL;
     }
-    if (_add_group(g) != 0) {
+    if (_add_group(g) != 0) { // 在tc中记录新的tg
         delete g;
         return NULL;
     }
@@ -155,20 +155,20 @@ int TaskControl::init(int concurrency) {
     _concurrency = concurrency;
 
     // Make sure TimerThread is ready.
-    if (get_or_create_global_timer_thread() == NULL) {
+    if (get_or_create_global_timer_thread() == NULL) { // 全局timer_thread,用于各种timeout唤醒
         LOG(ERROR) << "Fail to get global_timer_thread";
         return -1;
     }
 
     _workers.resize(_concurrency);
     for (int i = 0; i < _concurrency; ++i) {
-        const int rc = pthread_create(&_workers[i], NULL, worker_thread, this);
+        const int rc = pthread_create(&_workers[i], NULL, worker_thread, this); // 创建worker，worker中执行tg
         if (rc) {
             LOG(ERROR) << "Fail to create _workers[" << i << "], " << berror(rc);
             return -1;
         }
     }
-    _worker_usage_second.expose("bthread_worker_usage");
+    _worker_usage_second.expose("bthread_worker_usage"); // TODO(xuechengyun): 看看bvar
     _switch_per_second.expose("bthread_switch_second");
     _signal_per_second.expose("bthread_signal_second");
     _status.expose("bthread_group_status");
@@ -176,7 +176,7 @@ int TaskControl::init(int concurrency) {
     // Wait for at least one group is added so that choose_one_group()
     // never returns NULL.
     // TODO: Handle the case that worker quits before add_group
-    while (_ngroup == 0) {
+    while (_ngroup == 0) { // 因为上面在创建pthread,所以至少要创建完一个tg再return
         usleep(100);  // TODO: Elaborate
     }
     return 0;
@@ -195,13 +195,13 @@ int TaskControl::add_workers(int num) {
     for (int i = 0; i < num; ++i) {
         // Worker will add itself to _idle_workers, so we have to add
         // _concurrency before create a worker.
-        _concurrency.fetch_add(1);
+        _concurrency.fetch_add(1); // worker数量加1
         const int rc = pthread_create(
-                &_workers[i + old_concurency], NULL, worker_thread, this);
+                &_workers[i + old_concurency], NULL, worker_thread, this); // 新建pthread运行worker_thread函数
         if (rc) {
             LOG(WARNING) << "Fail to create _workers[" << i + old_concurency
                          << "], " << berror(rc);
-            _concurrency.fetch_sub(1, butil::memory_order_release);
+            _concurrency.fetch_sub(1, butil::memory_order_release); // 创建失败减1
             break;
         }
     }
@@ -230,9 +230,9 @@ void TaskControl::stop_and_join() {
     {
         BAIDU_SCOPED_LOCK(_modify_group_mutex);
         _stop = true;
-        _ngroup.exchange(0, butil::memory_order_relaxed);
+        _ngroup.exchange(0, butil::memory_order_relaxed); // group数归0
     }
-    for (int i = 0; i < PARKING_LOT_NUM; ++i) {
+    for (int i = 0; i < PARKING_LOT_NUM; ++i) { // 停掉所有pl
         _pl[i].stop();
     }
     // Interrupt blocking operations.
@@ -241,7 +241,7 @@ void TaskControl::stop_and_join() {
     }
     // Join workers
     for (size_t i = 0; i < _workers.size(); ++i) {
-        pthread_join(_workers[i], NULL);
+        pthread_join(_workers[i], NULL); // 上面停掉了pl,这里的worker拿不到task了就会退出(tg.wait_task)
     }
 }
 
@@ -254,9 +254,9 @@ TaskControl::~TaskControl() {
     _signal_per_second.hide();
     _status.hide();
 
-    stop_and_join();
+    stop_and_join(); // 主要是停掉那些正在调度执行tm的worker
 
-    free(_groups);
+    free(_groups); // 清理tg所占内存
     _groups = NULL;
 }
 
@@ -264,14 +264,14 @@ int TaskControl::_add_group(TaskGroup* g) {
     if (__builtin_expect(NULL == g, 0)) {
         return -1;
     }
-    std::unique_lock<butil::Mutex> mu(_modify_group_mutex);
-    if (_stop) {
+    std::unique_lock<butil::Mutex> mu(_modify_group_mutex); // 加锁以修改_groups
+    if (_stop) { // 如果已经stop那就不管了
         return -1;
     }
     size_t ngroup = _ngroup.load(butil::memory_order_relaxed);
     if (ngroup < (size_t)BTHREAD_MAX_CONCURRENCY) {
-        _groups[ngroup] = g;
-        _ngroup.store(ngroup + 1, butil::memory_order_release);
+        _groups[ngroup] = g; // 记录tg
+        _ngroup.store(ngroup + 1, butil::memory_order_release); // tg数量+1
     }
     mu.unlock();
     // See the comments in _destroy_group
@@ -301,17 +301,17 @@ int TaskControl::_destroy_group(TaskGroup* g) {
         for (size_t i = 0; i < ngroup; ++i) {
             if (_groups[i] == g) {
                 // No need for atomic_thread_fence because lock did it.
-                _groups[i] = _groups[ngroup - 1];
+                _groups[i] = _groups[ngroup - 1]; // 把最后一个tg放到当前位置(因为当前位置的tg需要被destory)
                 // Change _ngroup and keep _groups unchanged at last so that:
                 //  - If steal_task sees the newest _ngroup, it would not touch
-                //    _groups[ngroup -1]
+                //    _groups[ngroup -1] // 如果steal_task拿到了新的ngroup，则它不会访问最后一个tg(因为数量刚刚已经减1了)
                 //  - If steal_task sees old _ngroup and is still iterating on
                 //    _groups, it would not miss _groups[ngroup - 1] which was
                 //    swapped to _groups[i]. Although adding new group would
                 //    overwrite it, since we do signal_task in _add_group(),
                 //    we think the pending tasks of _groups[ngroup - 1] would
-                //    not miss.
-                _ngroup.store(ngroup - 1, butil::memory_order_release);
+                //    not miss. // 如果steal_task拿到了旧的ngroup并访问了最后一个tg也没有问题，因为这个tg被swap到了当前位置
+                _ngroup.store(ngroup - 1, butil::memory_order_release); // group数量减1
                 //_groups[ngroup - 1] = NULL;
                 erased = true;
                 break;
@@ -324,7 +324,7 @@ int TaskControl::_destroy_group(TaskGroup* g) {
     // access the removed group concurrently. We use simple strategy here:
     // Schedule a function which deletes the TaskGroup after
     // FLAGS_task_group_delete_delay seconds
-    if (erased) {
+    if (erased) { // 把清理tg的任务delete_task_group放到timer_thread中
         get_global_timer_thread()->schedule(
             delete_task_group, g,
             butil::microseconds_from_now(FLAGS_task_group_delete_delay * 1000000L));
@@ -361,7 +361,7 @@ bool TaskControl::steal_task(bthread_t* tid, size_t* seed, size_t offset) {
     return stolen;
 }
 
-void TaskControl::signal_task(int num_task) {
+void TaskControl::signal_task(int num_task) { // TODO(xuechengyun):
     if (num_task <= 0) {
         return;
     }
@@ -388,7 +388,7 @@ void TaskControl::signal_task(int num_task) {
         // TODO: Reduce this lock
         BAIDU_SCOPED_LOCK(g_task_control_mutex);
         if (_concurrency.load(butil::memory_order_acquire) < FLAGS_bthread_concurrency) {
-            add_workers(1);
+            add_workers(1); // 如果tg(worker)数小于设定的最小值，那就再创建一个tg
         }
     }
 }

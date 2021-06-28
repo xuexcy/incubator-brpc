@@ -29,11 +29,11 @@ inline bthread_t make_tid(uint32_t version, butil::ResourceId<TaskMeta> slot) {
     return (((bthread_t)version) << 32) | (bthread_t)slot.value;
 }
 
-inline butil::ResourceId<TaskMeta> get_slot(bthread_t tid) {
+inline butil::ResourceId<TaskMeta> get_slot(bthread_t tid) { // 低32位
     butil::ResourceId<TaskMeta> id = { (tid & 0xFFFFFFFFul) };
     return id;
 }
-inline uint32_t get_version(bthread_t tid) {
+inline uint32_t get_version(bthread_t tid) { // 高32位
     return (uint32_t)((tid >> 32) & 0xFFFFFFFFul);
 }
 
