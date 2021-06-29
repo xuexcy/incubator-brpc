@@ -58,7 +58,7 @@ public:
     void signal_task(int num_task); // TODO
 
     // Stop and join worker threads in TaskControl.
-    void stop_and_join();
+    void stop_and_join(); // xcy_done
 
     // Get # of worker threads.
     int concurrency() const
@@ -66,7 +66,7 @@ public:
 
     void print_rq_sizes(std::ostream& os);
 
-    double get_cumulated_worker_time();
+    double get_cumulated_worker_time(); // xcy_done: 所以worker/tg的执行时间之和
     int64_t get_cumulated_switch_count();
     int64_t get_cumulated_signal_count();
 
@@ -76,7 +76,7 @@ public:
 
     // Choose one TaskGroup (randomly right now).
     // If this method is called after init(), it never returns NULL.
-    TaskGroup* choose_one_group();
+    TaskGroup* choose_one_group(); // 随机选一个tg
 
 private:
     // Add/Remove a TaskGroup.
@@ -103,7 +103,7 @@ private:
     bvar::Adder<int64_t> _nworkers; // 创建的worker数量，新建就<<1, 删除就>>1
     butil::Mutex _pending_time_mutex;
     butil::atomic<bvar::LatencyRecorder*> _pending_time;
-    bvar::PassiveStatus<double> _cumulated_worker_time;
+    bvar::PassiveStatus<double> _cumulated_worker_time; // TODO(xuechengyun)
     bvar::PerSecond<bvar::PassiveStatus<double> > _worker_usage_second;
     bvar::PassiveStatus<int64_t> _cumulated_switch_count;
     bvar::PerSecond<bvar::PassiveStatus<int64_t> > _switch_per_second;

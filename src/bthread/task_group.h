@@ -239,7 +239,7 @@ friend class TaskControl;
     RemainedFn _last_context_remained;
     void* _last_context_remained_arg;
 
-    ParkingLot* _pl;
+    ParkingLot* _pl; // tc中的某个pl
 #ifndef BTHREAD_DONT_SAVE_PARKING_STATE
     ParkingLot::State _last_pl_state;
 #endif
@@ -247,8 +247,8 @@ friend class TaskControl;
     size_t _steal_offset;
     ContextualStack* _main_stack;
     bthread_t _main_tid; // TODO(xuechengyun):这玩意到底是干嘛的,又没有可执行任务
-    WorkStealingQueue<bthread_t> _rq;
-    RemoteTaskQueue _remote_rq;
+    WorkStealingQueue<bthread_t> _rq; // 双向队列
+    RemoteTaskQueue _remote_rq; // 单向有锁队列
     int _remote_num_nosignal;
     int _remote_nsignaled;
 };

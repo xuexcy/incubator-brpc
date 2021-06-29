@@ -224,7 +224,7 @@ extern int stop_and_join_epoll_threads();
 void TaskControl::stop_and_join() {
     // Close epoll threads so that worker threads are not waiting on epoll(
     // which cannot be woken up by signal_task below)
-    CHECK_EQ(0, stop_and_join_epoll_threads());
+    CHECK_EQ(0, stop_and_join_epoll_threads()); // TODO(xuechengyun)
 
     // Stop workers
     {
@@ -237,7 +237,7 @@ void TaskControl::stop_and_join() {
     }
     // Interrupt blocking operations.
     for (size_t i = 0; i < _workers.size(); ++i) {
-        interrupt_pthread(_workers[i]);
+        interrupt_pthread(_workers[i]); // TODO(xuechengyun)
     }
     // Join workers
     for (size_t i = 0; i < _workers.size(); ++i) {

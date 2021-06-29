@@ -36,7 +36,7 @@ static void register_sigurg() {
 
 int interrupt_pthread(pthread_t th) {
     pthread_once(&register_sigurg_once, register_sigurg);
-    return pthread_kill(th, SIGURG);
+    return pthread_kill(th, SIGURG); // TODO(xuechengyun)
 }
 
 }  // namespace bthread

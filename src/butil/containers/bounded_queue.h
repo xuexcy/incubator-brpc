@@ -36,7 +36,7 @@ namespace butil {
 //   q.push(1);
 //   q.push(2);
 //   ...
-   
+
 // [Initialize a class-member queue]
 //   class Foo {
 //     ...
@@ -54,11 +54,11 @@ namespace butil {
 enum StorageOwnership { OWNS_STORAGE, NOT_OWN_STORAGE };
 
 template <typename T>
-class BoundedQueue {
+class BoundedQueue { // 用数组实现的环形队列
 public:
     // You have to pass the memory for storing items at creation.
     // The queue contains at most memsize/sizeof(T) items.
-    BoundedQueue(void* mem, size_t memsize, StorageOwnership ownership)
+    BoundedQueue(void* mem, size_t memsize, StorageOwnership ownership) // xcy_done
         : _count(0)
         , _cap(memsize / sizeof(T))
         , _start(0)
@@ -66,11 +66,11 @@ public:
         , _items(mem) {
         DCHECK(_items);
     };
-    
+
     // Construct a queue with the given capacity.
     // The malloc() may fail silently, call initialized() to test validity
     // of the queue.
-    explicit BoundedQueue(size_t capacity)
+    explicit BoundedQueue(size_t capacity) // xcy_done
         : _count(0)
         , _cap(capacity)
         , _start(0)
@@ -78,7 +78,7 @@ public:
         , _items(malloc(capacity * sizeof(T))) {
         DCHECK(_items);
     };
-    
+
     BoundedQueue()
         : _count(0)
         , _cap(0)
@@ -108,19 +108,19 @@ public:
 
     // Push |item| into bottom side of this queue. If the queue is full,
     // pop topmost item first.
-    void elim_push(const T& item) {
+    void elim_push(const T& item) { // xcy_done
         if (_count < _cap) {
             new ((T*)_items + _mod(_start + _count, _cap)) T(item);
             ++_count;
         } else {
-            ((T*)_items)[_start] = item;
-            _start = _mod(_start + 1, _cap);
+            ((T*)_items)[_start] = item; // 替换队列首元素
+            _start = _mod(_start + 1, _cap); // 队首下标+1
         }
     }
-    
+
     // Push a default-constructed item into bottom side of this queue
     // Returns address of the item inside this queue
-    T* push() {
+    T* push() { // xcy_done
         if (_count < _cap) {
             return new ((T*)_items + _mod(_start + _count++, _cap)) T();
         }
@@ -129,7 +129,7 @@ public:
 
     // Push |item| into top side of this queue
     // Returns true on success, false if queue is full.
-    bool push_top(const T& item) {
+    bool push_top(const T& item) { // xcy_done 从队首加入元素
         if (_count < _cap) {
             _start = _start ? (_start - 1) : (_cap - 1);
             ++_count;
@@ -137,11 +137,11 @@ public:
             return true;
         }
         return false;
-    }    
-    
+    }
+
     // Push a default-constructed item into top side of this queue
     // Returns address of the item inside this queue
-    T* push_top() {
+    T* push_top() { // xcy_done 从队首取元素
         if (_count < _cap) {
             _start = _start ? (_start - 1) : (_cap - 1);
             ++_count;
@@ -149,13 +149,13 @@ public:
         }
         return NULL;
     }
-    
+
     // Pop top-most item from this queue
     // Returns true on success, false if queue is empty
-    bool pop() {
+    bool pop() { // xcy_done
         if (_count) {
             --_count;
-            ((T*)_items + _start)->~T();
+            ((T*)_items + _start)->~T(); // 析构调队首元素
             _start = _mod(_start + 1, _cap);
             return true;
         }
@@ -164,7 +164,7 @@ public:
 
     // Pop top-most item from this queue and copy into |item|.
     // Returns true on success, false if queue is empty
-    bool pop(T* item) {
+    bool pop(T* item) { // xcy_done
         if (_count) {
             --_count;
             T* const p = (T*)_items + _start;
@@ -178,7 +178,7 @@ public:
 
     // Pop bottom-most item from this queue
     // Returns true on success, false if queue is empty
-    bool pop_bottom() {
+    bool pop_bottom() { // xcy_done
         if (_count) {
             --_count;
             ((T*)_items + _mod(_start + _count, _cap))->~T();
@@ -189,7 +189,7 @@ public:
 
     // Pop bottom-most item from this queue and copy into |item|.
     // Returns true on success, false if queue is empty
-    bool pop_bottom(T* item) {
+    bool pop_bottom(T* item) { // xcy_done
         if (_count) {
             --_count;
             T* const p = (T*)_items + _mod(_start + _count, _cap);
@@ -201,7 +201,7 @@ public:
     }
 
     // Pop all items
-    void clear() {
+    void clear() { // xcy_done
         for (uint32_t i = 0; i < _count; ++i) {
             ((T*)_items + _mod(_start + i, _cap))->~T();
         }
@@ -210,11 +210,11 @@ public:
     }
 
     // Get address of top-most item, NULL if queue is empty
-    T* top() { 
-        return _count ? ((T*)_items + _start) : NULL; 
+    T* top() {
+        return _count ? ((T*)_items + _start) : NULL;
     }
-    const T* top() const { 
-        return _count ? ((const T*)_items + _start) : NULL; 
+    const T* top() const {
+        return _count ? ((const T*)_items + _start) : NULL;
     }
 
     // Randomly access item from top side.
@@ -234,13 +234,13 @@ public:
     }
 
     // Get address of bottom-most item, NULL if queue is empty
-    T* bottom() { 
-        return _count ? ((T*)_items + _mod(_start + _count - 1, _cap)) : NULL; 
+    T* bottom() {
+        return _count ? ((T*)_items + _mod(_start + _count - 1, _cap)) : NULL;
     }
     const T* bottom() const {
-        return _count ? ((const T*)_items + _mod(_start + _count - 1, _cap)) : NULL; 
+        return _count ? ((const T*)_items + _mod(_start + _count - 1, _cap)) : NULL;
     }
-    
+
     // Randomly access item from bottom side.
     // bottom(0) == bottom(), bottom(size()-1) == top()
     // Returns NULL if |index| is out of range.
@@ -284,7 +284,7 @@ public:
 private:
     // Since the space is possibly not owned, we disable copying.
     DISALLOW_COPY_AND_ASSIGN(BoundedQueue);
-    
+
     // This is faster than % in this queue because most |off| are smaller
     // than |cap|. This is probably not true in other place, be careful
     // before you use this trick.
@@ -294,12 +294,12 @@ private:
         }
         return off;
     }
-    
-    uint32_t _count;
-    uint32_t _cap;
-    uint32_t _start;
+
+    uint32_t _count; // 队列元素个数
+    uint32_t _cap; // 数组大小
+    uint32_t _start; // 队首下标
     StorageOwnership _ownership;
-    void* _items;
+    void* _items; // 储存队列元素的数组
 };
 
 }  // namespace butil

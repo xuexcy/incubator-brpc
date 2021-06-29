@@ -48,7 +48,7 @@ public:
         return 0;
     }
 
-    bool pop(bthread_t* task) {
+    bool pop(bthread_t* task) { // xcy_done 有锁
         if (_tasks.empty()) {
             return false;
         }
@@ -70,7 +70,7 @@ public:
     }
 
     size_t capacity() const { return _tasks.capacity(); }
-    
+
 private:
 friend class TaskGroup;
     DISALLOW_COPY_AND_ASSIGN(RemoteTaskQueue);
