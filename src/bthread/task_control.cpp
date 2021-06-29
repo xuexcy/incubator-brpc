@@ -335,7 +335,7 @@ int TaskControl::_destroy_group(TaskGroup* g) {
 bool TaskControl::steal_task(bthread_t* tid, size_t* seed, size_t offset) {
     // 1: Acquiring fence is paired with releasing fence in _add_group to
     // avoid accessing uninitialized slot of _groups.
-    const size_t ngroup = _ngroup.load(butil::memory_order_acquire/*1*/);
+    const size_t ngroup = _ngroup.load(butil::memory_order_acquire/*1*/); // tg数量
     if (0 == ngroup) {
         return false;
     }
@@ -346,7 +346,7 @@ bool TaskControl::steal_task(bthread_t* tid, size_t* seed, size_t offset) {
     for (size_t i = 0; i < ngroup; ++i, s += offset) {
         TaskGroup* g = _groups[s % ngroup];
         // g is possibly NULL because of concurrent _destroy_group
-        if (g) {
+        if (g) { // 优先偷rq
             if (g->_rq.steal(tid)) {
                 stolen = true;
                 break;

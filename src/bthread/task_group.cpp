@@ -118,22 +118,24 @@ bool TaskGroup::is_stopped(bthread_t tid) {
 bool TaskGroup::wait_task(bthread_t* tid) {
     do {
 #ifndef BTHREAD_DONT_SAVE_PARKING_STATE
-        if (_last_pl_state.stopped()) {
+        if (_last_pl_state.stopped()) { // pl已经停了
             return false;
         }
+        // 如果和先前的state相同，说明pl.state没有变化，说明pl中的_pending_signal没有发生变化
+        // 说明没有新的任务加入(即没有人调用pl.signal),没有任务那还偷啥子嘞，那就wait等人调用pl.signal后被唤醒
         _pl->wait(_last_pl_state);
-        if (steal_task(tid)) {
+        if (steal_task(tid)) { // 从remote_rq取task或去其他tg偷task, 并保存pl的state
             return true;
         }
 #else
-        const ParkingLot::State st = _pl->get_state();
-        if (st.stopped()) {
+        const ParkingLot::State st = _pl->get_state(); // pl当前的状态
+        if (st.stopped()) { // pl已经停了
             return false;
         }
         if (steal_task(tid)) {
             return true;
         }
-        _pl->wait(st);
+        _pl->wait(st); // 如果上面偷失败了，就在这里等新加入的任务唤醒
 #endif
     } while (true);
 }
@@ -149,7 +151,8 @@ void TaskGroup::run_main_task() {
 
     TaskGroup* dummy = this;
     bthread_t tid;
-    while (wait_task(&tid)) { // tg在这里一直取task，不行就去其他tg偷,偷不到就死循环(除非被停下来),也就是说这个while在程序停之前一直是true
+    // 消费自己的rq -> 消费自己的remote_rq -> 让tc去偷别人的rq -> 让tc去偷别人的remote_rq
+    while (wait_task(&tid)) { // tg在这里一直取remote_rq的task，不行就去其他tg偷,偷不到就睡眠&死循环(除非被停下来),也就是说这个while在程序停之前一直是true
         TaskGroup::sched_to(&dummy, tid); // 用新task_meta(tid)替换调tg中的旧task
         DCHECK_EQ(this, dummy);
         DCHECK_EQ(_cur_meta->stack, _main_stack);
@@ -196,7 +199,7 @@ TaskGroup::TaskGroup(TaskControl* c)
 {
     _steal_seed = butil::fast_rand();
     _steal_offset = OFFSET_TABLE[_steal_seed % ARRAY_SIZE(OFFSET_TABLE)];
-    _pl = &c->_pl[butil::fmix64(pthread_numeric_id()) % TaskControl::PARKING_LOT_NUM];
+    _pl = &c->_pl[butil::fmix64(pthread_numeric_id()) % TaskControl::PARKING_LOT_NUM]; // 从tc里面随机一个pl
     CHECK(c);
 }
 
@@ -367,7 +370,7 @@ int TaskGroup::start_foreground(TaskGroup** pg,
     const int64_t start_ns = butil::cpuwide_time_ns();
     const bthread_attr_t using_attr = (attr ? *attr : BTHREAD_ATTR_NORMAL);
     butil::ResourceId<TaskMeta> slot;
-    TaskMeta* m = butil::get_resource(&slot);
+    TaskMeta* m = butil::get_resource(&slot); // 新建tm
     if (__builtin_expect(!m, 0)) {
         return ENOMEM;
     }
@@ -389,7 +392,7 @@ int TaskGroup::start_foreground(TaskGroup** pg,
     }
 
     TaskGroup* g = *pg;
-    g->_control->_nbthreads << 1;
+    g->_control->_nbthreads << 1; // 任务数+1
     if (g->is_current_pthread_task()) {
         // never create foreground task in pthread.
         g->ready_to_run(m->tid, (using_attr.flags & BTHREAD_NOSIGNAL));
@@ -551,11 +554,11 @@ void TaskGroup::sched(TaskGroup** pg) {
     bthread_t next_tid = 0;
     // Find next task to run, if none, switch to idle thread of the group.
 #ifndef BTHREAD_FAIR_WSQ
-    const bool popped = g->_rq.pop(&next_tid);
+    const bool popped = g->_rq.pop(&next_tid); // 从队列尾取
 #else
-    const bool popped = g->_rq.steal(&next_tid);
+    const bool popped = g->_rq.steal(&next_tid); // 从队列头取
 #endif
-    if (!popped && !g->steal_task(&next_tid)) {
+    if (!popped && !g->steal_task(&next_tid)) { // 取失败了就去偷，偷失败了就回到main_tid
         // Jump to main task if there's no task to run.
         next_tid = g->_main_tid;
     }
@@ -645,8 +648,8 @@ void TaskGroup::destroy_self() {
 }
 
 void TaskGroup::ready_to_run(bthread_t tid, bool nosignal) {
-    push_rq(tid);
-    if (nosignal) {
+    push_rq(tid); // 往_rq里push任务
+    if (nosignal) { // TODO(xuechengyun)
         ++_num_nosignal;
     } else {
         const int additional_signal = _num_nosignal;
@@ -668,7 +671,7 @@ void TaskGroup::flush_nosignal_tasks() {
 void TaskGroup::ready_to_run_remote(bthread_t tid, bool nosignal) {
     _remote_rq._mutex.lock();
     while (!_remote_rq.push_locked(tid)) {
-        flush_nosignal_tasks_remote_locked(_remote_rq._mutex);
+        flush_nosignal_tasks_remote_locked(_remote_rq._mutex); // TODO(xuechengyun)
         LOG_EVERY_SECOND(ERROR) << "_remote_rq is full, capacity="
                                 << _remote_rq.capacity();
         ::usleep(1000);

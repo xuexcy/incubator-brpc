@@ -46,7 +46,7 @@ public:
     // Returns #workers woken up.
     int signal(int num_task) {
         _pending_signal.fetch_add((num_task << 1), butil::memory_order_release);
-        return futex_wake_private(&_pending_signal, num_task);
+        return futex_wake_private(&_pending_signal, num_task); // 有新的任务，唤醒正在wait的pl来消费任务
     }
 
     // Get a state for later wait().
@@ -60,14 +60,14 @@ public:
         futex_wait_private(&_pending_signal, expected_state.val, NULL);
     }
 
-    // Wakeup suspended wait() and make them unwaitable ever. 
+    // Wakeup suspended wait() and make them unwaitable ever.
     void stop() {
         _pending_signal.fetch_or(1);
         futex_wake_private(&_pending_signal, 10000);
     }
 private:
     // higher 31 bits for signalling, LSB for stopping.
-    butil::atomic<int> _pending_signal;
+    butil::atomic<int> _pending_signal; // 最低位为1时表示stop
 };
 
 }  // namespace bthread

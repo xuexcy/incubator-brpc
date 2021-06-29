@@ -82,7 +82,7 @@ public:
     // Purpose of this function is to avoid pushing `next_tid' to _rq and
     // then being popped by sched(pg), which is not necessary.
     static void sched_to(TaskGroup** pg, TaskMeta* next_meta);
-    static void sched_to(TaskGroup** pg, bthread_t next_tid);
+    static void sched_to(TaskGroup** pg, bthread_t next_tid); // xcy_done 切换成任务next_tid
     static void exchange(TaskGroup** pg, bthread_t next_tid);
 
     // The callback will be run in the beginning of next-run bthread.
@@ -128,7 +128,7 @@ public:
     bthread_t main_tid() const { return _main_tid; }
     TaskStatistics main_stat() const;
     // Routine of the main task which should be called from a dedicated pthread.
-    void run_main_task();
+    void run_main_task(); // xcy_done
 
     // current_task is a function in macOS 10.0+
 #ifdef current_task
@@ -211,14 +211,14 @@ friend class TaskControl;
     // loop calling this function should end.
     bool wait_task(bthread_t* tid);
 
-    bool steal_task(bthread_t* tid) {
+    bool steal_task(bthread_t* tid) { // xcy_done 先消费remote_rq再去其他tg偷
         if (_remote_rq.pop(tid)) {
             return true;
         }
 #ifndef BTHREAD_DONT_SAVE_PARKING_STATE
-        _last_pl_state = _pl->get_state();
+        _last_pl_state = _pl->get_state(); // 保存pl状态
 #endif
-        return _control->steal_task(tid, &_steal_seed, _steal_offset);
+        return _control->steal_task(tid, &_steal_seed, _steal_offset); // 通过tc统一偷task
     }
 
 #ifndef NDEBUG
