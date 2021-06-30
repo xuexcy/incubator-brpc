@@ -57,6 +57,7 @@ public:
     // the identifier into `tid'. Switch to the new task and schedule old task
     // to run.
     // Return 0 on success, errno otherwise.
+    // xcy_done:执行这个任务，如果有其他正在执行的tm，让它靠边站
     static int start_foreground(TaskGroup** pg,
                                 bthread_t* __restrict tid,
                                 const bthread_attr_t* __restrict attr,
@@ -75,7 +76,11 @@ public:
                          void* __restrict arg);
 
     // Suspend caller and run next bthread in TaskGroup *pg.
-    static void sched(TaskGroup** pg);
+    static void sched(TaskGroup** pg); // xcy_done: 找任务再切任务(切换调用下面的sched_to(next_tid))
+    // xcy_done: 切到下一个任务(找到任务后会调用sched_to(next_meta)), 它比sched多的一段代码[基本就是]sched_to(next_tid)里面的代码
+    // 相当于都是先sched_to(next_tid) 再 sched_to(next_meta), 不同的地方在于调用ending_sched的地方一定是刚刚执行完了另一个task,
+    // 前面说[基本就是],也就是说还有不一样的地方，那就是在ending_sched里面判断了切换后的任务与刚执行的任务是否是同一个stack_type
+    // 如果是的话,那就复用上一个tm的stack,免得又重新申请
     static void ending_sched(TaskGroup** pg);
 
     // Suspend caller and run bthread `next_tid' in TaskGroup *pg.
@@ -83,13 +88,13 @@ public:
     // then being popped by sched(pg), which is not necessary.
     static void sched_to(TaskGroup** pg, TaskMeta* next_meta);
     static void sched_to(TaskGroup** pg, bthread_t next_tid); // xcy_done 切换成任务next_tid
-    static void exchange(TaskGroup** pg, bthread_t next_tid);
+    static void exchange(TaskGroup** pg, bthread_t next_tid); // xcy_done 把正在执行的任务放到remaind，并开始执行参数里的任务(TODO(xcy): 谁在调)
 
     // The callback will be run in the beginning of next-run bthread.
     // Can't be called by current bthread directly because it often needs
     // the target to be suspended already.
     typedef void (*RemainedFn)(void*);
-    void set_remained(RemainedFn cb, void* arg) {
+    void set_remained(RemainedFn cb, void* arg) { // TODO(xcy):什么时候会需要remained，会不会并发
         _last_context_remained = cb;
         _last_context_remained_arg = arg;
     }
@@ -103,7 +108,7 @@ public:
 
     // Suspend caller and run another bthread. When the caller will resume
     // is undefined.
-    static void yield(TaskGroup** pg);
+    static void yield(TaskGroup** pg); // xcy_done:挂起正在运行的任务并去执行下一个
 
     // Suspend caller until bthread `tid' terminates.
     static int join(bthread_t tid, void** return_value);
@@ -114,7 +119,7 @@ public:
     //    if (exists(tid)) {
     //        Wait for events of the thread.   // Racy, may block indefinitely.
     //    }
-    static bool exists(bthread_t tid);
+    static bool exists(bthread_t tid); xcy_done
 
     // Put attribute associated with `tid' into `*attr'.
     // Returns 0 on success, -1 otherwise and errno is set.
@@ -135,23 +140,23 @@ public:
 #undef current_task
 #endif
     // Meta/Identifier of current task in this group.
-    TaskMeta* current_task() const { return _cur_meta; }
-    bthread_t current_tid() const { return _cur_meta->tid; }
+    TaskMeta* current_task() const { return _cur_meta; } // xcy_done
+    bthread_t current_tid() const { return _cur_meta->tid; } // xcy_done
     // Uptime of current task in nanoseconds.
-    int64_t current_uptime_ns() const
+    int64_t current_uptime_ns() const // xcy_done 当前任务的运行时间
     { return butil::cpuwide_time_ns() - _cur_meta->cpuwide_start_ns; }
 
     // True iff current task is the one running run_main_task()
-    bool is_current_main_task() const { return current_tid() == _main_tid; }
+    bool is_current_main_task() const { return current_tid() == _main_tid; } // xcy_done: 是否是main_task
     // True iff current task is in pthread-mode.
-    bool is_current_pthread_task() const
+    bool is_current_pthread_task() const // xcy_done:当前任务时候是pthread_task(只有main_task才是在pthread并且main_task没有任何要执行的东西,它的fn是NULL)
     { return _cur_meta->stack == _main_stack; }
 
     // Active time in nanoseconds spent by this TaskGroup.
-    int64_t cumulated_cputime_ns() const { return _cumulated_cputime_ns; }
+    int64_t cumulated_cputime_ns() const { return _cumulated_cputime_ns; } // tg的累计执行时间(就是在这个tg里面tm的执行时间之和)
 
     // Push a bthread into the runqueue
-    void ready_to_run(bthread_t tid, bool nosignal = false);
+    void ready_to_run(bthread_t tid, bool nosignal = false); // 把任务放到rq里面
     // Flush tasks pushed to rq but signalled.
     void flush_nosignal_tasks();
 
@@ -194,7 +199,7 @@ friend class TaskControl;
     // of groups are postponed to avoid race.
     ~TaskGroup();
 
-    static void task_runner(intptr_t skip_remained);
+    static void task_runner(intptr_t skip_remained); // xcy_done:执行当前任务，然后把rq中的任务执行完
 
     // Callbacks for set_remained()
     static void _release_last_context(void*);
@@ -209,7 +214,7 @@ friend class TaskControl;
     // Wait for a task to run.
     // Returns true on success, false is treated as permanent error and the
     // loop calling this function should end.
-    bool wait_task(bthread_t* tid);
+    bool wait_task(bthread_t* tid); // xcy_done 取任务，没有就wait
 
     bool steal_task(bthread_t* tid) { // xcy_done 先消费remote_rq再去其他tg偷
         if (_remote_rq.pop(tid)) {
@@ -225,10 +230,10 @@ friend class TaskControl;
     int _sched_recursive_guard;
 #endif
 
-    TaskMeta* _cur_meta;
+    TaskMeta* _cur_meta; // 当前任务
 
     // the control that this group belongs to
-    TaskControl* _control;
+    TaskControl* _control; // tc，全局唯一，所有tg里的tc都一样
     int _num_nosignal;
     int _nsignaled;
     // last scheduling time
@@ -241,7 +246,7 @@ friend class TaskControl;
 
     ParkingLot* _pl; // tc中的某个pl
 #ifndef BTHREAD_DONT_SAVE_PARKING_STATE
-    ParkingLot::State _last_pl_state;
+    ParkingLot::State _last_pl_state; // pl上一次的状态
 #endif
     size_t _steal_seed;
     size_t _steal_offset;

@@ -151,7 +151,10 @@ void TaskGroup::run_main_task() {
 
     TaskGroup* dummy = this;
     bthread_t tid;
-    // 消费自己的rq -> 消费自己的remote_rq -> 让tc去偷别人的rq -> 让tc去偷别人的remote_rq
+    // 消费自己的remote_rq -> 让tc去偷别人的rq -> 让tc去偷别人的remote_rq -> 消费完自己的rq (前三步都是wait_task，最后一步在task_runner里面)
+    // wait_task: 拿任务(pop remote_rq或去其他tg偷)
+    // sched_to: 切换任务
+    // task_runner:: 跑任务(把当前tg的rq跑完)
     while (wait_task(&tid)) { // tg在这里一直取remote_rq的task，不行就去其他tg偷,偷不到就睡眠&死循环(除非被停下来),也就是说这个while在程序停之前一直是true
         TaskGroup::sched_to(&dummy, tid); // 用新task_meta(tid)替换调tg中的旧task
         DCHECK_EQ(this, dummy);
@@ -257,7 +260,7 @@ void TaskGroup::task_runner(intptr_t skip_remained) {
     //       different groups.
     TaskGroup* g = tls_task_group;
 
-    if (!skip_remained) {
+    if (!skip_remained) { // 如果不跳过remained就执行remained
         while (g->_last_context_remained) {
             RemainedFn fn = g->_last_context_remained;
             g->_last_context_remained = NULL;
@@ -296,13 +299,13 @@ void TaskGroup::task_runner(intptr_t skip_remained) {
         // libraries.
         void* thread_return;
         try {
-            thread_return = m->fn(m->arg);
+            thread_return = m->fn(m->arg); // 执行task
         } catch (ExitException& e) {
             thread_return = e.value();
         }
 
         // Group is probably changed
-        g = tls_task_group;
+        g = tls_task_group; // TODO(xcy): 为啥
 
         // TODO: Save thread_return
         (void)thread_return;
@@ -318,7 +321,7 @@ void TaskGroup::task_runner(intptr_t skip_remained) {
         // Clean tls variables, must be done before changing version_butex
         // otherwise another thread just joined this thread may not see side
         // effects of destructing tls variables.
-        KeyTable* kt = tls_bls.keytable;
+        KeyTable* kt = tls_bls.keytable; // TODO(xcy): 没看懂，再见
         if (kt != NULL) {
             return_keytable(m->attr.keytable_pool, kt);
             // After deletion: tls may be set during deletion.
@@ -338,11 +341,11 @@ void TaskGroup::task_runner(intptr_t skip_remained) {
         }
         butex_wake_except(m->version_butex, 0);
 
-        g->_control->_nbthreads << -1;
-        g->set_remained(TaskGroup::_release_last_context, m);
-        ending_sched(&g);
+        g->_control->_nbthreads << -1; // 任务执行结束，tg里面任务减1
+        g->set_remained(TaskGroup::_release_last_context, m); // 任务执行完了，清理任务的栈. TODO(xcy): 为什么不直接执行而是放到remained里面
+        ending_sched(&g); // 在tg的rq里找下一个task
 
-    } while (g->_cur_meta->tid != g->_main_tid);
+    } while (g->_cur_meta->tid != g->_main_tid); // 上面的ending_sched一直从rq中取任务，直到没有了就退出
 
     // Was called from a pthread and we don't have BTHREAD_STACKTYPE_PTHREAD
     // tasks to run, quit for more tasks.
@@ -383,9 +386,9 @@ int TaskGroup::start_foreground(TaskGroup** pg,
     CHECK(m->stack == NULL);
     m->attr = using_attr;
     m->local_storage = LOCAL_STORAGE_INIT;
-    m->cpuwide_start_ns = start_ns;
+    m->cpuwide_start_ns = start_ns; // tm开始时间
     m->stat = EMPTY_STAT;
-    m->tid = make_tid(*m->version_butex, slot);
+    m->tid = make_tid(*m->version_butex, slot); // TODO(xcy): 看看version_butex标识啥子
     *th = m->tid;
     if (using_attr.flags & BTHREAD_LOG_START_AND_FINISH) {
         LOG(INFO) << "Started bthread " << m->tid;
@@ -393,13 +396,13 @@ int TaskGroup::start_foreground(TaskGroup** pg,
 
     TaskGroup* g = *pg;
     g->_control->_nbthreads << 1; // 任务数+1
-    if (g->is_current_pthread_task()) {
+    if (g->is_current_pthread_task()) { // 如果当前正在main_task，那就直接准备执行tm(就是把tm放到rq里面)
         // never create foreground task in pthread.
         g->ready_to_run(m->tid, (using_attr.flags & BTHREAD_NOSIGNAL));
     } else {
         // NOSIGNAL affects current task, not the new task.
         RemainedFn fn = NULL;
-        if (g->current_task()->about_to_quit) {
+        if (g->current_task()->about_to_quit) { // TODO(xcy): bthread_about_to_quit，在rpc代码下有调用
             fn = ready_to_run_in_worker_ignoresignal;
         } else {
             fn = ready_to_run_in_worker;
@@ -408,8 +411,8 @@ int TaskGroup::start_foreground(TaskGroup** pg,
             g->current_tid(),
             (bool)(using_attr.flags & BTHREAD_NOSIGNAL)
         };
-        g->set_remained(fn, &args);
-        TaskGroup::sched_to(pg, m->tid);
+        g->set_remained(fn, &args); // 当前任务靠边站,放到remained里面
+        TaskGroup::sched_to(pg, m->tid); // 执行这个任务，因为要start_foreground
     }
     return 0;
 }
@@ -531,9 +534,11 @@ void TaskGroup::ending_sched(TaskGroup** pg) {
         if (next_meta->stack_type() == cur_meta->stack_type()) {
             // also works with pthread_task scheduling to pthread_task, the
             // transfered stack is just _main_stack.
+            // 看下面的代码，stack的获取只需要stack_type和一个函数指针，而对于普通tm的函数指针都是task_runner
+            // 所以只要stack_type相同，那这个stack完全可以复用
             next_meta->set_stack(cur_meta->release_stack());
         } else {
-            ContextualStack* stk = get_stack(next_meta->stack_type(), task_runner);
+            ContextualStack* stk = get_stack(next_meta->stack_type(), task_runner); // TODO(xcy)
             if (stk) {
                 next_meta->set_stack(stk);
             } else {
@@ -546,7 +551,7 @@ void TaskGroup::ending_sched(TaskGroup** pg) {
             }
         }
     }
-    sched_to(pg, next_meta);
+    sched_to(pg, next_meta); // 切换task
 }
 
 void TaskGroup::sched(TaskGroup** pg) {
@@ -562,7 +567,7 @@ void TaskGroup::sched(TaskGroup** pg) {
         // Jump to main task if there's no task to run.
         next_tid = g->_main_tid;
     }
-    sched_to(pg, next_tid);
+    sched_to(pg, next_tid); // 切换到任务next_tid
 }
 
 void TaskGroup::sched_to(TaskGroup** pg, TaskMeta* next_meta) {
@@ -621,7 +626,7 @@ void TaskGroup::sched_to(TaskGroup** pg, TaskMeta* next_meta) {
         LOG(FATAL) << "bthread=" << g->current_tid() << " sched_to itself!";
     }
 
-    while (g->_last_context_remained) { // TODO(xuechengyun): 这个remained是个啥
+    while (g->_last_context_remained) { // 上面已经切换完任务，这里如果还有remained，让remained先执行完
         RemainedFn fn = g->_last_context_remained;
         g->_last_context_remained = NULL;
         fn(g->_last_context_remained_arg);
@@ -649,17 +654,17 @@ void TaskGroup::destroy_self() {
 
 void TaskGroup::ready_to_run(bthread_t tid, bool nosignal) {
     push_rq(tid); // 往_rq里push任务
-    if (nosignal) { // TODO(xuechengyun)
-        ++_num_nosignal;
+    if (nosignal) { // TODO(xcy): 什么时候需要nosignal=true
+        ++_num_nosignal; // nosignal 数量加1
     } else {
         const int additional_signal = _num_nosignal;
-        _num_nosignal = 0;
-        _nsignaled += 1 + additional_signal;
-        _control->signal_task(1 + additional_signal);
+        _num_nosignal = 0; // nosignal 归0
+        _nsignaled += 1 + additional_signal; // signal数量加1(上面push_rq的这个)加所有nosignal
+        _control->signal_task(1 + additional_signal); // 把没被signal的全部signal
     }
 }
 
-void TaskGroup::flush_nosignal_tasks() {
+void TaskGroup::flush_nosignal_tasks() { // 唤醒所有nosignal的
     const int val = _num_nosignal;
     if (val) {
         _num_nosignal = 0;
@@ -670,7 +675,7 @@ void TaskGroup::flush_nosignal_tasks() {
 
 void TaskGroup::ready_to_run_remote(bthread_t tid, bool nosignal) {
     _remote_rq._mutex.lock();
-    while (!_remote_rq.push_locked(tid)) {
+    while (!_remote_rq.push_locked(tid)) { // push不成功就一直push(remote_rq的push和pop用的同一个mutex)
         flush_nosignal_tasks_remote_locked(_remote_rq._mutex); // TODO(xuechengyun)
         LOG_EVERY_SECOND(ERROR) << "_remote_rq is full, capacity="
                                 << _remote_rq.capacity();
@@ -702,6 +707,7 @@ void TaskGroup::flush_nosignal_tasks_remote_locked(butil::Mutex& locked_mutex) {
 }
 
 void TaskGroup::ready_to_run_general(bthread_t tid, bool nosignal) {
+    // 如果自己调自己,那就把任务放到rq, 如果别的tg调自己,那就把任务放到remote_rq
     if (tls_task_group == this) {
         return ready_to_run(tid, nosignal);
     }
@@ -722,7 +728,7 @@ void TaskGroup::ready_to_run_in_worker(void* args_in) {
 
 void TaskGroup::ready_to_run_in_worker_ignoresignal(void* args_in) {
     ReadyToRunArgs* args = static_cast<ReadyToRunArgs*>(args_in);
-    return tls_task_group->push_rq(args->tid);
+    return tls_task_group->push_rq(args->tid); //上面的ready_to_run就比这里多一个处理nosignal,这里不需要处理就直接push_rq
 }
 
 struct SleepArgs {
@@ -735,13 +741,16 @@ struct SleepArgs {
 static void ready_to_run_from_timer_thread(void* arg) {
     CHECK(tls_task_group == NULL);
     const SleepArgs* e = static_cast<const SleepArgs*>(arg);
-    e->group->control()->choose_one_group()->ready_to_run_remote(e->tid);
+    e->group->control()->choose_one_group()->ready_to_run_remote(e->tid); // TODO(xcy): 为什么要从tc里面选一个tg，而不是直接用这个tg
 }
 
 void TaskGroup::_add_sleep_event(void* void_args) {
     // Must copy SleepArgs. After calling TimerThread::schedule(), previous
     // thread may be stolen by a worker immediately and the on-stack SleepArgs
     // will be gone.
+    // 下面这行，必须完全拷贝SleepArgs, 因为再下面的timer_thread会schedule这个任务(也就是放到timer_thread里面sleep一会)
+    // 那么，等到timeout的时候，void_args可能已经析构了,看看_add_sleep_event的调用处usleep函数, 传入的参数是局部变量SleepArg e)
+    // 也就是上面这段英文说的 the on-stack SleepArgs will be gone (栈上的SleepArgs会被析构掉)
     SleepArgs e = *static_cast<SleepArgs*>(void_args);
     TaskGroup* g = e.group;
 
@@ -752,7 +761,7 @@ void TaskGroup::_add_sleep_event(void* void_args) {
 
     if (!sleep_id) {
         // fail to schedule timer, go back to previous thread.
-        g->ready_to_run(e.tid);
+        g->ready_to_run(e.tid); // sleep失败了，继续放到tg里面
         return;
     }
 
@@ -761,14 +770,14 @@ void TaskGroup::_add_sleep_event(void* void_args) {
     {
         BAIDU_SCOPED_LOCK(e.meta->version_lock);
         if (given_ver == *e.meta->version_butex && !e.meta->interrupted) {
-            e.meta->current_sleep = sleep_id;
+            e.meta->current_sleep = sleep_id; // 如果没有被interrupted，那就记录下sleep_id，然后return
             return;
         }
     }
     // The thread is stopped or interrupted.
     // interrupt() always sees that current_sleep == 0. It will not schedule
     // the calling thread. The race is between current thread and timer thread.
-    if (get_global_timer_thread()->unschedule(sleep_id) == 0) {
+    if (get_global_timer_thread()->unschedule(sleep_id) == 0) { // 走到这里说明已经interrupted了，从timer_thread里面拿出来就行了
         // added to timer, previous thread may be already woken up by timer and
         // even stopped. It's safe to schedule previous thread when unschedule()
         // returns 0 which means "the not-run-yet sleep_id is removed". If the

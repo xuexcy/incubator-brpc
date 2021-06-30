@@ -27,7 +27,7 @@
 #include "butil/logging.h"                      // CHECK
 #endif
 
-typedef uint64_t bthread_t;
+typedef uint64_t bthread_t; // bthread的id,类似pthread的tid
 
 // tid returned by bthread_start_* never equals this value.
 static const bthread_t INVALID_BTHREAD = 0;

@@ -29,7 +29,7 @@
 namespace bthread {
 
 template <typename T> // 参考:https://www.pianshen.com/article/12341222944/
-class WorkStealingQueue { // 双端队列, push和pop都从bottom
+class WorkStealingQueue { // xcy_done: 双端队列, push和pop都从bottom
 public:
     WorkStealingQueue()
         : _bottom(1) // 初始化时第一次放在下标1（其实好像初始化为0也可以)

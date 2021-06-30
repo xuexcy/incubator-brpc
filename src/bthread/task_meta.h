@@ -31,8 +31,8 @@
 namespace bthread {
 
 struct TaskStatistics {
-    int64_t cputime_ns;
-    int64_t nswitch;
+    int64_t cputime_ns; // 任务执行时间
+    int64_t nswitch; // 任务被tg切换的次数
 };
 
 class KeyTable;
@@ -61,16 +61,16 @@ struct TaskMeta {
 
     // Scheduling of the thread can be delayed.
     bool about_to_quit;
-    
+
     // [Not Reset] guarantee visibility of version_butex.
     pthread_spinlock_t version_lock;
-    
+
     // [Not Reset] only modified by one bthread at any time, no need to be atomic
     uint32_t* version_butex;
 
     // The identifier. It does not have to be here, however many code is
     // simplified if they can get tid from TaskMeta.
-    bthread_t tid;
+    bthread_t tid; // bthread_id
 
     // User function and argument
     void* (*fn)(void*);
@@ -81,7 +81,7 @@ struct TaskMeta {
 
     // Attributes creating this task
     bthread_attr_t attr;
-    
+
     // Statistics
     int64_t cpuwide_start_ns;
     TaskStatistics stat;
@@ -102,7 +102,7 @@ public:
         version_butex = butex_create_checked<uint32_t>();
         *version_butex = 1;
     }
-        
+
     ~TaskMeta() {
         butex_destroy(version_butex);
         version_butex = NULL;

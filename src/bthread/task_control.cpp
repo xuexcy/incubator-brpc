@@ -372,9 +372,11 @@ void TaskControl::signal_task(int num_task) { // TODO(xuechengyun):
     if (num_task > 2) {
         num_task = 2;
     }
+    // 这个start_index计算方法和tg里面计算_pl的方法一样，也就是说哪个tg调用了tc.signal, 这里的_pl[start_index]就是tg._pl
+    // 相当于tg._pl.signal, 也就是唤醒tg的pl
     int start_index = butil::fmix64(pthread_numeric_id()) % PARKING_LOT_NUM;
     num_task -= _pl[start_index].signal(1);
-    if (num_task > 0) {
+    if (num_task > 0) { // > 0说明1<=num_task<=2, 那就再去找几个pl唤醒
         for (int i = 1; i < PARKING_LOT_NUM && num_task > 0; ++i) {
             if (++start_index >= PARKING_LOT_NUM) {
                 start_index = 0;
@@ -382,6 +384,8 @@ void TaskControl::signal_task(int num_task) { // TODO(xuechengyun):
             num_task -= _pl[start_index].signal(1);
         }
     }
+    // num_task没有归0，说明所有pl都唤醒了都没办法让num_task归0(pl太少了,不够用)
+    // concurrency < bthread_concurrency 说明worker数小于设定的数量, 那就再创建一个worker(tg)
     if (num_task > 0 &&
         FLAGS_bthread_min_concurrency > 0 &&    // test min_concurrency for performance
         _concurrency.load(butil::memory_order_relaxed) < FLAGS_bthread_concurrency) {

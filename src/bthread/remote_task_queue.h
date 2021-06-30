@@ -33,7 +33,7 @@ class TaskGroup;
 // randomly choose a TaskGroup to push which distributes the contentions,
 // this queue is simply implemented as a queue protected with a lock.
 // The function names should be self-explanatory.
-class RemoteTaskQueue {
+class RemoteTaskQueue { // xcy_done
 public:
     RemoteTaskQueue() {}
 
