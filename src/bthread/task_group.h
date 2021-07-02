@@ -104,7 +104,7 @@ public:
     // If |group| is NULL or current thread is non-bthread, call usleep(3)
     // instead. This function does not create thread-local TaskGroup.
     // Returns: 0 on success, -1 otherwise and errno is set.
-    static int usleep(TaskGroup** pg, uint64_t timeout_us);
+    static int usleep(TaskGroup** pg, uint64_t timeout_us); // 把正在执行的task放到timer_thread中去sleep
 
     // Suspend caller and run another bthread. When the caller will resume
     // is undefined.
@@ -161,31 +161,31 @@ public:
     void flush_nosignal_tasks();
 
     // Push a bthread into the runqueue from another non-worker thread.
-    void ready_to_run_remote(bthread_t tid, bool nosignal = false);
+    void ready_to_run_remote(bthread_t tid, bool nosignal = false); // xcy_done 把任务放到remote_rq执行
     void flush_nosignal_tasks_remote_locked(butil::Mutex& locked_mutex);
     void flush_nosignal_tasks_remote();
 
     // Automatically decide the caller is remote or local, and call
     // the corresponding function.
-    void ready_to_run_general(bthread_t tid, bool nosignal = false);
+    void ready_to_run_general(bthread_t tid, bool nosignal = false); // xcy_done
     void flush_nosignal_tasks_general();
 
     // The TaskControl that this TaskGroup belongs to.
     TaskControl* control() const { return _control; }
 
     // Call this instead of delete.
-    void destroy_self();
+    void destroy_self(); // 由tc来删掉这个tg
 
     // Wake up blocking ops in the thread.
     // Returns 0 on success, errno otherwise.
     static int interrupt(bthread_t tid, TaskControl* c);
 
     // Get the meta associate with the task.
-    static TaskMeta* address_meta(bthread_t tid);
+    static TaskMeta* address_meta(bthread_t tid); // 根据tid拿到tm
 
     // Push a task into _rq, if _rq is full, retry after some time. This
     // process make go on indefinitely.
-    void push_rq(bthread_t tid);
+    void push_rq(bthread_t tid); // 把任务放到rq里面
 
 private:
 friend class TaskControl;
@@ -203,13 +203,13 @@ friend class TaskControl;
 
     // Callbacks for set_remained()
     static void _release_last_context(void*);
-    static void _add_sleep_event(void*);
+    static void _add_sleep_event(void*); // 把tm放到timer_thread中
     struct ReadyToRunArgs {
         bthread_t tid;
         bool nosignal;
     };
     static void ready_to_run_in_worker(void*);
-    static void ready_to_run_in_worker_ignoresignal(void*);
+    static void ready_to_run_in_worker_ignoresignal(void*); // TODO(xcy)看看啥时候用
 
     // Wait for a task to run.
     // Returns true on success, false is treated as permanent error and the
@@ -237,10 +237,10 @@ friend class TaskControl;
     int _num_nosignal;
     int _nsignaled;
     // last scheduling time
-    int64_t _last_run_ns;
-    int64_t _cumulated_cputime_ns;
+    int64_t _last_run_ns; // 上一个任务最后的运行时间/开始切换新任务的时间
+    int64_t _cumulated_cputime_ns; // tg中所有tm总计执行时间
 
-    size_t _nswitch;
+    size_t _nswitch; // 切换tm的次数
     RemainedFn _last_context_remained;
     void* _last_context_remained_arg;
 

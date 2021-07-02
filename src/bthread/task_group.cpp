@@ -748,9 +748,9 @@ void TaskGroup::_add_sleep_event(void* void_args) {
     // Must copy SleepArgs. After calling TimerThread::schedule(), previous
     // thread may be stolen by a worker immediately and the on-stack SleepArgs
     // will be gone.
-    // 下面这行，必须完全拷贝SleepArgs, 因为再下面的timer_thread会schedule这个任务(也就是放到timer_thread里面sleep一会)
-    // 那么，等到timeout的时候，void_args可能已经析构了,看看_add_sleep_event的调用处usleep函数, 传入的参数是局部变量SleepArg e)
-    // 也就是上面这段英文说的 the on-stack SleepArgs will be gone (栈上的SleepArgs会被析构掉)
+    // 下面这行意思是，必须完全拷贝SleepArgs, 因为再下面的timer_thread会schedule这个任务(也就是放到timer_thread里面sleep一会)
+    // 那么，等到timeout的时候，void_args可能已经析构了,看看_add_sleep_event的调用处usleep函数, 传入的参数是局部变量SleepArg e,
+    // 也就是上面这段原英文注释说的 the on-stack SleepArgs will be gone (栈上的SleepArgs会被析构掉)
     SleepArgs e = *static_cast<SleepArgs*>(void_args);
     TaskGroup* g = e.group;
 
@@ -761,7 +761,7 @@ void TaskGroup::_add_sleep_event(void* void_args) {
 
     if (!sleep_id) {
         // fail to schedule timer, go back to previous thread.
-        g->ready_to_run(e.tid); // sleep失败了，继续放到tg里面
+        g->ready_to_run(e.tid); // sleep失败了，继续放到tg里面等着被run
         return;
     }
 
@@ -792,7 +792,7 @@ void TaskGroup::_add_sleep_event(void* void_args) {
 // To be consistent with sys_usleep, set errno and return -1 on error.
 int TaskGroup::usleep(TaskGroup** pg, uint64_t timeout_us) {
     if (0 == timeout_us) {
-        yield(pg);
+        yield(pg); // todo
         return 0;
     }
     TaskGroup* g = *pg;
@@ -800,9 +800,9 @@ int TaskGroup::usleep(TaskGroup** pg, uint64_t timeout_us) {
     // the timer may wake up(jump to) current still-running context.
     SleepArgs e = { timeout_us, g->current_tid(), g->current_task(), g };
     g->set_remained(_add_sleep_event, &e);
-    sched(pg);
+    sched(pg); // sched执行完后，上面set_remained里的函数也执行完了
     g = *pg;
-    e.meta->current_sleep = 0;
+    e.meta->current_sleep = 0; // TODO(xcy): 为什么要归0
     if (e.meta->interrupted) {
         // Race with set and may consume multiple interruptions, which are OK.
         e.meta->interrupted = false;
