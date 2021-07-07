@@ -36,12 +36,12 @@ struct TimerThreadOptions {
     // and more likely to lock the global mutex. You better not change
     // this value, just leave it to us.
     // Default: 13
-    size_t num_buckets;
+    size_t num_buckets; // 任务分桶，默认13个桶
 
     // If this field is not empty, some bvar for reporting stats of TimerThread
     // will be exposed with this prefix.
     // Default: ""
-    std::string bvar_prefix;
+    std::string bvar_prefix; // TODO(xcy)
 
     // Constructed with default options.
     TimerThreadOptions();
@@ -64,7 +64,7 @@ public:
     // Start the timer thread.
     // This method should only be called once.
     // return 0 if success, errno otherwise.
-    int start(const TimerThreadOptions* options);
+    int start(const TimerThreadOptions* options); // 建桶、创建pthread执行run()
 
     // Stop the timer thread. Later schedule() will return INVALID_TASK_ID.
     void stop_and_join();
@@ -87,24 +87,24 @@ public:
 
 private:
     // the timer thread will run this method.
-    void run();
+    void run(); // timer_thread开始调度task的入口
     static void* run_this(void* arg);
 
     bool _started;            // whether the timer thread was started successfully.
     butil::atomic<bool> _stop;
 
     TimerThreadOptions _options;
-    Bucket* _buckets;        // list of tasks to be run
+    Bucket* _buckets;        // list of tasks to be run  任务链表，默认13个
     internal::FastPthreadMutex _mutex;    // protect _nearest_run_time
-    int64_t _nearest_run_time;
+    int64_t _nearest_run_time; // timer_thread中最早的任务时间
     // the futex for wake up timer thread. can't use _nearest_run_time because
     // it's 64-bit.
-    int _nsignals;
+    int _nsignals; // 用于futex_wake，数值的含义是新schedule的任务是timer_thread中最早的任务
     pthread_t _thread;       // all scheduled task will be run on this thread
 };
 
 // Get the global TimerThread which never quits.
-TimerThread* get_or_create_global_timer_thread();
+TimerThread* get_or_create_global_timer_thread(); // 创建timer_thread，全局都只有一个
 TimerThread* get_global_timer_thread();
 
 }   // end namespace bthread

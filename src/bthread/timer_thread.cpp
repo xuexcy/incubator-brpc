@@ -36,30 +36,37 @@ void run_worker_startfn();
 const TimerThread::TaskId TimerThread::INVALID_TASK_ID = 0;
 
 TimerThreadOptions::TimerThreadOptions()
-    : num_buckets(13) {
+    : num_buckets(13) { // 设置bucket数量
 }
 
 // A task contains the necessary information for running fn(arg).
 // Tasks are created in Bucket::schedule and destroyed in TimerThread::run
 struct BAIDU_CACHELINE_ALIGNMENT TimerThread::Task {
+    // 任务被放在bucket中，bucket中的任务用linked_list存储, next就是当前任务的下一个任务
     Task* next;                 // For linking tasks in a Bucket.
+    /// 任务被执行的时间，在timer_thread调度时，会比较各个Task的run_time
     int64_t run_time;           // run the task at this realtime
-    void (*fn)(void*);          // the fn(arg) to run
-    void* arg;
+    void (*fn)(void*);          // the fn(arg) to run  : task需要执行的函数
+    void* arg; // task需要执行的函数的参数
     // Current TaskId, checked against version in TimerThread::run to test
     // if this task is unscheduled.
-    TaskId task_id;
+    TaskId task_id; // uint64_t, 任务id
     // initial_version:     not run yet
-    // initial_version + 1: running
+    // initial_version + 1: running 当id+1后，表示任务正在执行
     // initial_version + 2: removed (also the version of next Task reused
     //                      this struct)
+    // 当任务被调度时，会修改version的值，初始值为task_id的高32位
+    // (task_id >> 32) == version 任务没有被执行
+    // (task_id >> 32) + 1 == version 任务正在被执行
+    // (task_id >> 32) + 2 == version 任务已经结束
+    // 在这个文件中找修改version值的地方就知道什么时候会改值
     butil::atomic<uint32_t> version;
 
-    Task() : version(2/*skip 0*/) {}
+    Task() : version(2/*skip 0*/) {} // 应该是task_id为0不是正经任务，所以初始化version = 0 + 2表示这个任务不执行
 
     // Run this task and delete this struct.
     // Returns true if fn(arg) did run.
-    bool run_and_delete();
+    bool run_and_delete(); // 执行任务并删除，在此过程中会修改version的值
 
     // Delete this struct if this task was unscheduled.
     // Returns true on deletion.
@@ -67,7 +74,7 @@ struct BAIDU_CACHELINE_ALIGNMENT TimerThread::Task {
 };
 
 // Timer tasks are sharded into different Buckets to reduce contentions.
-class BAIDU_CACHELINE_ALIGNMENT TimerThread::Bucket {
+class BAIDU_CACHELINE_ALIGNMENT TimerThread::Bucket { // 一个链表，节点是待执行任务，并带有任务开始执行的时间
 public:
     Bucket()
         : _nearest_run_time(std::numeric_limits<int64_t>::max())
@@ -76,13 +83,14 @@ public:
 
     ~Bucket() {}
 
-    struct ScheduleResult {
-        TimerThread::TaskId task_id;
-        bool earlier;
+    struct ScheduleResult { // 把新任务加入到bucket后返回的一些信息
+        TimerThread::TaskId task_id; // 新任务的task_id
+        bool earlier; // 是否是当前bucket中最先执行的任务, 就是这个任务的执行时间和bucket的_nearest_run_time比较
     };
 
     // Schedule a task into this bucket.
     // Returns the TaskId and if it has the nearest run time.
+    // 把任务加到bucket
     ScheduleResult schedule(void (*fn)(void*), void* arg,
                             const timespec& abstime);
 
@@ -91,13 +99,15 @@ public:
     Task* consume_tasks();
 
 private:
-    internal::FastPthreadMutex _mutex;
+    internal::FastPthreadMutex _mutex; // TODO(xcy)
+    // 链表中最先执行的那个任务的执行时间，这个任务可能在链表中间，到时间以后调度执行这个任务
+    // 执行完以后这个任务还是放在链表里面(因为bucket不知道任务在链表的哪里，删除比较费时)
+    // 执行完后任务的version会在初始值上+2，标记这个任务已经执行完，等待删除
     int64_t _nearest_run_time;
     Task* _task_head; // bucket是个链表，这是链表的头
 };
 
 // 高32(version) + 低32(slot.value)
-// TODO(xuechengyun): 看看slot是个啥子
 // Utilies for making and extracting TaskId.
 inline TimerThread::TaskId make_task_id(
     butil::ResourceId<TimerThread::Task> slot, uint32_t version) {
@@ -199,18 +209,18 @@ TimerThread::Bucket::schedule(void (*fn)(void*), void* arg,
     task->arg = arg;
     task->run_time = butil::timespec_to_microseconds(abstime);
     uint32_t version = task->version.load(butil::memory_order_relaxed);
-    if (version == 0) {  // skip 0.
+    if (version == 0) {  // skip 0. 等于0说明任务创建失败了?直接将version=2，标识不再执行这个任务
         task->version.fetch_add(2, butil::memory_order_relaxed);
         version = 2;
     }
     const TaskId id = make_task_id(slot_id, version);
     task->task_id = id;
     bool earlier = false;
-    {
+    {   // 把任务放到链表头
         BAIDU_SCOPED_LOCK(_mutex);
         task->next = _task_head;
         _task_head = task;
-        if (task->run_time < _nearest_run_time) {
+        if (task->run_time < _nearest_run_time) { // 如果这个任务比当前bucket中最早的还早，那它就是最早的
             _nearest_run_time = task->run_time;
             earlier = true;
         }
@@ -229,14 +239,14 @@ TimerThread::TaskId TimerThread::schedule( // TODO(xuechengyun):找到schedule�
     const Bucket::ScheduleResult result =
         _buckets[butil::fmix64(pthread_numeric_id()) % _options.num_buckets]
         .schedule(fn, arg, abstime); // 任务加入bucket
-    if (result.earlier) { // 如果task是bucket中最早需要执行的任务
+    if (result.earlier) { // 如果task是bucket中最早需要执行的任务, 那下面再看看它是不是
         bool earlier = false;
         const int64_t run_time = butil::timespec_to_microseconds(abstime);
         {
             BAIDU_SCOPED_LOCK(_mutex);
             if (run_time < _nearest_run_time) { // 如果task比当前timer_thread最早的还要早
                 _nearest_run_time = run_time;
-                ++_nsignals;
+                ++_nsignals; // 这是_nsignals发生变化的地方，等价于当前新加的任务是timer_thread中最早的任务的次数
                 earlier = true;
             }
         }
@@ -263,7 +273,7 @@ int TimerThread::unschedule(TaskId task_id) {
         LOG(ERROR) << "Invalid task_id=" << task_id;
         return -1;
     }
-    const uint32_t id_version = version_of_task_id(task_id);
+    const uint32_t id_version = version_of_task_id(task_id); // id_version表示任务初始化version(也就是没执行)
     uint32_t expected_version = id_version;
     // This CAS is rarely contended, should be fast.
     // The acquire fence is paired with release fence in Task::run_and_delete
@@ -344,6 +354,7 @@ void TimerThread::run() {
         busy_seconds_second.expose_as(_options.bvar_prefix, "usage");
     }
     // 死循环,将bucket中的任务放到堆里(小顶堆tasks)
+    // stop_and_join的时候，这个_stop就会变成true，如果在循环里面wait住了，也会被stop_and_join里的futex_wake唤醒
     while (!_stop.load(butil::memory_order_relaxed)) {
         // Clear _nearest_run_time before consuming tasks from buckets.
         // This helps us to be aware of earliest task of the new tasks before we
@@ -394,7 +405,7 @@ void TimerThread::run() {
                 }
             }
             std::pop_heap(tasks.begin(), tasks.end(), task_greater); // 取一个任务出堆(其实就是task1)
-            tasks.pop_back();
+            tasks.pop_back(); // 上面pop_heap，数组最后一个就为空了
             if (task1->run_and_delete()) { // 执行任务
                 ++ntriggered;
             }
@@ -433,6 +444,7 @@ void TimerThread::run() {
             ptimeout = &next_timeout;
         }
         busy_seconds += (now - last_sleep_time) / 1000000.0;
+        // wait ptimeout后执行下一个任务,如果timer_thread中加入了更早的任务，那这里就会被wake(在TimerThread::schedule里面)
         futex_wait_private(&_nsignals, expected_nsignals, ptimeout);
         last_sleep_time = butil::gettimeofday_us();
     }
@@ -440,7 +452,7 @@ void TimerThread::run() {
 }
 
 void TimerThread::stop_and_join() {
-    _stop.store(true, butil::memory_order_relaxed);
+    _stop.store(true, butil::memory_order_relaxed); // 在run()的while循环处起作用
     if (_started) {
         {
             BAIDU_SCOPED_LOCK(_mutex);
@@ -460,18 +472,18 @@ void TimerThread::stop_and_join() {
 static pthread_once_t g_timer_thread_once = PTHREAD_ONCE_INIT;
 static TimerThread* g_timer_thread = NULL;
 static void init_global_timer_thread() {
-    g_timer_thread = new (std::nothrow) TimerThread;
+    g_timer_thread = new (std::nothrow) TimerThread; // 创建timer_thread
     if (g_timer_thread == NULL) {
         LOG(FATAL) << "Fail to new g_timer_thread";
         return;
     }
     TimerThreadOptions options;
     options.bvar_prefix = "bthread_timer";
-    const int rc = g_timer_thread->start(&options);
+    const int rc = g_timer_thread->start(&options); // 启动timer_thread
     if (rc != 0) {
         LOG(FATAL) << "Fail to start timer_thread, " << berror(rc);
         delete g_timer_thread;
-        g_timer_thread = NULL;
+        g_timer_thread = NULL; // 创建失败，指针置空（好习惯）
         return;
     }
 }

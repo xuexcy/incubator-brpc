@@ -28,6 +28,9 @@
 #include "bthread/types.h"                       // bthread_t
 
 namespace bthread {
+// mutex会锁上整个pthread(也就taskgroup),导致这个tg上的其他tm都无法执行
+// 所以需要butex来锁tm，将执行权交给其他tm
+// butex之于bthread类比mutex之于pthread
 
 // Create a butex which is a futex-like 32-bit primitive for synchronizing
 // bthreads/pthreads.

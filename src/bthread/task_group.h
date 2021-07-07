@@ -241,7 +241,7 @@ friend class TaskControl;
     int64_t _cumulated_cputime_ns; // tg中所有tm总计执行时间
 
     size_t _nswitch; // 切换tm的次数
-    RemainedFn _last_context_remained;
+    RemainedFn _last_context_remained; // 在当前tm执行完后会被执行的函数,一般是刚刚被临时挂起的tm
     void* _last_context_remained_arg;
 
     ParkingLot* _pl; // tc中的某个pl

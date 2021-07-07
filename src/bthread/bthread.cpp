@@ -45,7 +45,7 @@ static bool validate_bthread_concurrency(const char*, int32_t val) {
     // not be strictly in a validator. But it's OK for a int flag.
     return bthread_setconcurrency(val) == 0;
 }
-const int ALLOW_UNUSED register_FLAGS_bthread_concurrency = 
+const int ALLOW_UNUSED register_FLAGS_bthread_concurrency =
     ::GFLAGS_NS::RegisterFlagValidator(&FLAGS_bthread_concurrency,
                                     validate_bthread_concurrency);
 
@@ -328,7 +328,7 @@ int bthread_timer_add(bthread_timer_t* id, timespec abstime,
     if (c == NULL) {
         return ENOMEM;
     }
-    bthread::TimerThread* tt = bthread::get_or_create_global_timer_thread();
+    bthread::TimerThread* tt = bthread::get_or_create_global_timer_thread(); // 创建timer_thread(全局唯一)
     if (tt == NULL) {
         return ENOMEM;
     }
@@ -430,5 +430,5 @@ int bthread_list_join(bthread_list_t* list) {
     static_cast<bthread::TidList*>(list->impl)->apply(bthread::TidJoiner());
     return 0;
 }
-    
+
 }  // extern "C"
