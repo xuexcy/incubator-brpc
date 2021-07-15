@@ -31,11 +31,11 @@
 namespace bthread {
 
 struct StackStorage {
-     int stacksize;
-     int guardsize;
+     int stacksize; // 栈大小
+     int guardsize; // 保护页大小
     // Assume stack grows upwards.
     // http://www.boost.org/doc/libs/1_55_0/libs/context/doc/html/context/stack.html
-    void* bottom;
+    void* bottom; // 栈底地址
     unsigned valgrind_stack_id;
 
     // Clears all members.
@@ -46,7 +46,7 @@ struct StackStorage {
         valgrind_stack_id = 0;
     }
 };
- 
+
 // Allocate a piece of stack.
 int allocate_stack_storage(StackStorage* s, int stacksize, int guardsize);
 // Deallocate a piece of stack. Parameters MUST be returned or set by the
@@ -62,9 +62,9 @@ enum StackType {
 };
 
 struct ContextualStack {
-    bthread_fcontext_t context;
+    bthread_fcontext_t context; // void* 在storage上创建的context
     StackType stacktype;
-    StackStorage storage;
+    StackStorage storage; // 申请到的栈空间，包含栈大小、地址、保护页大小等信息
 };
 
 // Get a stack in the `type' and run `entry' at the first time that the

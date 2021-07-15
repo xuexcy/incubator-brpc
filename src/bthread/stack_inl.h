@@ -49,34 +49,36 @@ struct LargeStackClass {
 template <typename StackClass> struct StackFactory {
     struct Wrapper : public ContextualStack {
         explicit Wrapper(void (*entry)(intptr_t)) {
+            // 分配栈空间
             if (allocate_stack_storage(&storage, *StackClass::stack_size_flag,
                                        FLAGS_guard_page_size) != 0) {
-                storage.zeroize();
+                storage.zeroize(); // 分配失败归零
                 context = NULL;
                 return;
             }
+            // 构造栈内部结构
             context = bthread_make_fcontext(storage.bottom, storage.stacksize, entry);
             stacktype = (StackType)StackClass::stacktype;
         }
         ~Wrapper() {
             if (context) {
                 context = NULL;
-                deallocate_stack_storage(&storage);
+                deallocate_stack_storage(&storage); // 清理栈
                 storage.zeroize();
             }
         }
     };
-    
+
     static ContextualStack* get_stack(void (*entry)(intptr_t)) {
         return butil::get_object<Wrapper>(entry);
     }
-    
+
     static void return_stack(ContextualStack* sc) {
         butil::return_object(static_cast<Wrapper*>(sc));
     }
 };
 
-template <> struct StackFactory<MainStackClass> {
+template <> struct StackFactory<MainStackClass> { // 模板特化
     static ContextualStack* get_stack(void (*)(intptr_t)) {
         ContextualStack* s = new (std::nothrow) ContextualStack;
         if (NULL == s) {
@@ -87,7 +89,7 @@ template <> struct StackFactory<MainStackClass> {
         s->storage.zeroize();
         return s;
     }
-    
+
     static void return_stack(ContextualStack* s) {
         delete s;
     }
@@ -192,7 +194,7 @@ template <> struct ObjectPoolValidator<
         return w->context != NULL;
     }
 };
-    
+
 }  // namespace butil
 
 #endif  // BTHREAD_ALLOCATE_STACK_INL_H

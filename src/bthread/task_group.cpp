@@ -144,6 +144,7 @@ static double get_cumulated_cputime_from_this(void* arg) {
     return static_cast<TaskGroup*>(arg)->cumulated_cputime_ns() / 1000000000.0;
 }
 
+// https://sf-zhou.github.io/brpc/brpc_04_schedule.html
 void TaskGroup::run_main_task() {
     bvar::PassiveStatus<double> cumulated_cputime(
         get_cumulated_cputime_from_this, this);
@@ -156,11 +157,12 @@ void TaskGroup::run_main_task() {
     // sched_to: 切换任务
     // task_runner:: 跑任务(把当前tg的rq跑完)
     while (wait_task(&tid)) { // tg在这里一直取remote_rq的task，不行就去其他tg偷,偷不到就睡眠&死循环(除非被停下来),也就是说这个while在程序停之前一直是true
-        TaskGroup::sched_to(&dummy, tid); // 用新task_meta(tid)替换调tg中的旧task
-        DCHECK_EQ(this, dummy);
+        TaskGroup::sched_to(&dummy, tid); // 用新task_meta(tid)替换调tg中的旧task，并执行这个新task
+        // sched_to中有jump_stack，stack永远是从task_runner开始的，task_runner中有while循环会执行完tg中的所有tm
+        DCHECK_EQ(this, dummy); // sched_to是可能会堵塞的，当它执行完并恢复到当前执行语句时，可能已经不是再调用sched_to的那个线程了,sched_to函数的最后一句就是把最后正在使用的tg保存的dummy，而这里的this也就是也变成了另一个tg（也就是dummy)
         DCHECK_EQ(_cur_meta->stack, _main_stack);
         if (_cur_meta->tid != _main_tid) {
-            TaskGroup::task_runner(1/*skip remained*/); // 执行新task_meta
+            TaskGroup::task_runner(1/*skip remained*/); // 执行这个tg中的task_meta
         }
         if (FLAGS_show_per_worker_usage_in_vars && !usage_bvar) {
             char name[32];
@@ -299,13 +301,17 @@ void TaskGroup::task_runner(intptr_t skip_remained) {
         // libraries.
         void* thread_return;
         try {
-            thread_return = m->fn(m->arg); // 执行task
+            thread_return = m->fn(m->arg); // 执行tm中的函数
         } catch (ExitException& e) {
             thread_return = e.value();
         }
 
         // Group is probably changed
-        g = tls_task_group; // TODO(xcy): 为啥
+        // 上面执行m->fn后，这个fn函数可能会挂住，比如函数调用了bthread_usleep，那么这个tm会被重新放到tg的队列中等待执行
+        // 等到被重新执行完后就会执行这一句, 被重新执行的时候可能是被其他tg偷过去执行的，所以需要重新给g赋值,相当于调用task_runner的参数tg
+        // 和执行的这里的tg可能不是同一个了
+        // 和
+        g = tls_task_group;
 
         // TODO: Save thread_return
         (void)thread_return;
@@ -345,7 +351,7 @@ void TaskGroup::task_runner(intptr_t skip_remained) {
         g->set_remained(TaskGroup::_release_last_context, m); // 任务执行完了，清理任务的栈. TODO(xcy): 为什么不直接执行而是放到remained里面
         ending_sched(&g); // 在tg的rq里找下一个task
 
-    } while (g->_cur_meta->tid != g->_main_tid); // 上面的ending_sched一直从rq中取任务，直到没有了就退出
+    } while (g->_cur_meta->tid != g->_main_tid); // 上面的ending_sched会一直寻找并执行下一个任务直到没有任务后回到main_task
 
     // Was called from a pthread and we don't have BTHREAD_STACKTYPE_PTHREAD
     // tasks to run, quit for more tasks.
@@ -438,7 +444,7 @@ int TaskGroup::start_background(bthread_t* __restrict th,
     m->about_to_quit = false;
     m->fn = fn;
     m->arg = arg;
-    CHECK(m->stack == NULL);
+    CHECK(m->stack == NULL); // 新建的tm是没有stack的
     m->attr = using_attr;
     m->local_storage = LOCAL_STORAGE_INIT;
     m->cpuwide_start_ns = start_ns;
@@ -525,7 +531,7 @@ void TaskGroup::ending_sched(TaskGroup** pg) {
 #endif
     if (!popped && !g->steal_task(&next_tid)) {
         // Jump to main task if there's no task to run.
-        next_tid = g->_main_tid;
+        next_tid = g->_main_tid; // 当走到这里的时候，说明没有tm需要执行了, 回到main_tid
     }
 
     TaskMeta* const cur_meta = g->_cur_meta;
@@ -534,8 +540,8 @@ void TaskGroup::ending_sched(TaskGroup** pg) {
         if (next_meta->stack_type() == cur_meta->stack_type()) {
             // also works with pthread_task scheduling to pthread_task, the
             // transfered stack is just _main_stack.
-            // 看下面的代码，stack的获取只需要stack_type和一个函数指针，而对于普通tm的函数指针都是task_runner
-            // 所以只要stack_type相同，那这个stack完全可以复用
+            // 将stack交接给next_meta，这是cur_meta中需要执行的任务就已经结束了(就是用户传入fn、arg)
+            // 也就是说第一个tm从task_runner开始跑,函数执行完后将stack交给后面的tm继续执行，而不需要为新的tm建一个从task_runner开始stack
             next_meta->set_stack(cur_meta->release_stack());
         } else {
             ContextualStack* stk = get_stack(next_meta->stack_type(), task_runner); // TODO(xcy)
@@ -551,7 +557,7 @@ void TaskGroup::ending_sched(TaskGroup** pg) {
             }
         }
     }
-    sched_to(pg, next_meta); // 切换task
+    sched_to(pg, next_meta); // 切换task,可能会回到main_task
 }
 
 void TaskGroup::sched(TaskGroup** pg) {
@@ -610,11 +616,15 @@ void TaskGroup::sched_to(TaskGroup** pg, TaskMeta* next_meta) {
         if (cur_meta->stack != NULL) {
             if (next_meta->stack != cur_meta->stack) {
                 jump_stack(cur_meta->stack, next_meta->stack); // 汇编实现的用户态任务栈切换
+                // cur_meta(主协程或其他协程)在此处挂起，然后进入next_meta bthread 任务入口(新任务从task_runner开始执行,旧任务从上次自己yield的地方开始)
+                // 上面jump_stack后，汇编代码里面会jmp到next_meta的task下一步需要执行的地方,
+
                 // probably went to another group, need to assign g again.
-                g = tls_task_group; // TODO(xuechengyun): 为啥子这里会切换tg
+                g = tls_task_group; // jump_stack后程序从next_meta的任务开始执行，如果这个任务被挂起(比如调用了bthread_usleep),那么这个tm会被重新放到tg中
+                // 等到tm再次被执行时，可能是被别的tg偷取执行了，也就是tls_task_group可能是偷next_meta的tg，而不是sched_to这个函数的参数tg
             }
 #ifndef NDEBUG
-            else {
+            else { // 两个bthread任务的stack不可能相同，除非两个都是pthread任务，是main_stack
                 // else pthread_task is switching to another pthread_task, sc
                 // can only equal when they're both _main_stack
                 CHECK(cur_meta->stack == g->_main_stack);
@@ -622,6 +632,8 @@ void TaskGroup::sched_to(TaskGroup** pg, TaskMeta* next_meta) {
 #endif
         }
         // else because of ending_sched(including pthread_task->pthread_task)
+        // 因为在ending_sched里面cur_meta的stack交给了next_meta,所以cur_meta的stack=NULL
+        // 而next_meta继续在这个stack上运行，所以也不要jump_stack
     } else {
         LOG(FATAL) << "bthread=" << g->current_tid() << " sched_to itself!";
     }
@@ -894,7 +906,7 @@ int TaskGroup::interrupt(bthread_t tid, TaskControl* c) {
     return 0;
 }
 
-void TaskGroup::yield(TaskGroup** pg) {
+void TaskGroup::yield(TaskGroup** pg) { // 切换到下一个tm，把当前tm重新放到队列
     TaskGroup* g = *pg;
     ReadyToRunArgs args = { g->current_tid(), false };
     g->set_remained(ready_to_run_in_worker, &args);

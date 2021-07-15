@@ -61,7 +61,10 @@ inline void TaskGroup::exchange(TaskGroup** pg, bthread_t next_tid) {
 
 inline void TaskGroup::sched_to(TaskGroup** pg, bthread_t next_tid) {
     TaskMeta* next_meta = address_meta(next_tid);
-    if (next_meta->stack == NULL) { // TODO(xuechengyun): 看看为什么没有栈空间
+    // 在task_group.cpp有两句CHECK(m->stack == NULL)，意思就是新加入的tm是没有stack,等tm需要执行的时候再创建
+    if (next_meta->stack == NULL) {
+        // 当执行到这个sched_to的时候，说明这个新加入的tm该执行了，那么下面为其创建一个stack
+        // 可以看到，任何新加入的tm，都是从task_runner开始跑的
         ContextualStack* stk = get_stack(next_meta->stack_type(), task_runner);
         if (stk) {
             next_meta->set_stack(stk);

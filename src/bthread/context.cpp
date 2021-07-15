@@ -377,29 +377,51 @@ __asm (
 );
 
 #endif
+// 原文链接：https://blog.csdn.net/wxj1992/article/details/109271030
+// %rax	返回值
+// %rbx	被调用者保存寄存器
+// %rcx	第4个参数
+// %rdx	第3个参数(待执行函数指针)
+// %rsi	第2个参数(stacksize)
+// %rdi	第1个参数(stack.bottom)
+// %rbp	被调用者保存寄存器
+// %rsp	栈指针
+// %r8	第5个参数
+// %r9	第6个参数
+// %r10	调用者保存寄存器
+// %r11	调用者保存寄存器
+// %r12	被调用者保存寄存器
+// %r13	被调用者保存寄存器
+// %r14	被调用者保存寄存器
+// %r15	被调用者保存寄存器
+// 值 : 所在地址
 
+// mxcsr : [stack.bottom - 72, stack.bottom - 68)
+// fpu : [stack.bottom - 68, stack.bottom - 64)
+// bthread需要执行的函数指针: [stack.bottom - 16, stack.bottom - 8)
+// finish : [stack.bottom - 4, stack.bottom)
 #if defined(BTHREAD_CONTEXT_PLATFORM_linux_x86_64) && defined(BTHREAD_CONTEXT_COMPILER_gcc)
 __asm (
-".text\n"
-".globl bthread_make_fcontext\n"
-".type bthread_make_fcontext,@function\n"
-".align 16\n"
-"bthread_make_fcontext:\n"
-"    movq  %rdi, %rax\n"
-"    andq  $-16, %rax\n"
-"    leaq  -0x48(%rax), %rax\n"
-"    movq  %rdx, 0x38(%rax)\n"
-"    stmxcsr  (%rax)\n"
-"    fnstcw   0x4(%rax)\n"
-"    leaq  finish(%rip), %rcx\n"
-"    movq  %rcx, 0x40(%rax)\n"
-"    ret \n"
-"finish:\n"
-"    xorq  %rdi, %rdi\n"
-"    call  _exit@PLT\n"
-"    hlt\n"
-".size bthread_make_fcontext,.-bthread_make_fcontext\n"
-".section .note.GNU-stack,\"\",%progbits\n"
+".text\n" // 代码段
+".globl bthread_make_fcontext\n" // 链接符号bthread_make_fcontext
+".type bthread_make_fcontext,@function\n" // 设置bthread_make_fcontext为函数
+".align 16\n" // 16字节对齐, 下面的内存变量地址必须为16的倍数
+"bthread_make_fcontext:\n" // 函数体
+"    movq  %rdi, %rax\n" // 第一个参数放入rax中, 也就是%rax = stack.bottom
+"    andq  $-16, %rax\n" // 对齐
+"    leaq  -0x48(%rax), %rax\n" // rax中的值-72后写入rax,也就是 (%rax = stack.bottom - 72), rax在下面没有再变动过，也就当前rax的地址就是函数返回值bthread_context_t,也就是栈顶
+"    movq  %rdx, 0x38(%rax)\n" // %(rax+56) = rdx , 把rdx(第三个参数[函数指针(都是task_runner)])写到rax+56的位置(stack.bottom-16)
+"    stmxcsr  (%rax)\n" // mxcsr寄存器中的值放到rax所在的地址(stack.bottom - 72)
+"    fnstcw   0x4(%rax)\n" // 把控制寄存器的值放到rax+4所在的地址(stack.bottom - 68)
+"    leaq  finish(%rip), %rcx\n" // rip是这个函数执行完后需要执行的下一步的地址，也就是函数调用者下一步要执行的语句地址,是函数的调用者写入rip的，这里计算rip的绝对地址后存放到rcx
+"    movq  %rcx, 0x40(%rax)\n" // rcx的值放到rax+64(stack.bottom - 8)
+"    ret \n" // 返回，从堆栈中弹出内容到ip寄存器，子程序结束
+"finish:\n" // 用户函数执行完后调用
+"    xorq  %rdi, %rdi\n" // 存储参数的rdi寄存器清0
+"    call  _exit@PLT\n" // 退出
+"    hlt\n" // 暂停
+".size bthread_make_fcontext,.-bthread_make_fcontext\n" // 设定指定符号的大小; "."表示当前地址; -bthread_make_fcontext就是减去的符号的地址为整个函数的大小
+".section .note.GNU-stack,\"\",%progbits\n" // 保护代码，禁止生成可执行堆栈
 ".previous\n"
 );
 
@@ -411,33 +433,33 @@ __asm (
 ".globl _bthread_jump_fcontext\n"
 ".align 8\n"
 "_bthread_jump_fcontext:\n"
-"    pushq  %rbp  \n"
+"    pushq  %rbp  \n" // 通用寄存器入栈
 "    pushq  %rbx  \n"
 "    pushq  %r15  \n"
 "    pushq  %r14  \n"
 "    pushq  %r13  \n"
 "    pushq  %r12  \n"
-"    leaq  -0x8(%rsp), %rsp\n"
-"    cmp  $0, %rcx\n"
-"    je  1f\n"
-"    stmxcsr  (%rsp)\n"
-"    fnstcw   0x4(%rsp)\n"
+"    leaq  -0x8(%rsp), %rsp\n" // 栈顶指针上移8字节(可以存两个int了)
+"    cmp  $0, %rcx\n" // %rcx是第bthread_jump_fcontext的第四个参数，也就是preserve_fpu(保存fpu)
+"    je  1f\n" // 如果上面cmp为true，调到 "1:\n" 处
+"    stmxcsr  (%rsp)\n" // mxcsr寄存器的值保存到rsp中
+"    fnstcw   0x4(%rsp)\n" // fpu的值保存到rsp+4的地方
 "1:\n"
-"    movq  %rsp, (%rdi)\n"
-"    movq  %rsi, %rsp\n"
-"    cmp  $0, %rcx\n"
-"    je  2f\n"
-"    ldmxcsr  (%rsp)\n"
-"    fldcw  0x4(%rsp)\n"
+"    movq  %rsp, (%rdi)\n" // rsp栈顶指针放到rdi处(第一个参数&from->context), &from->context = 栈顶指针
+"    movq  %rsi, %rsp\n" // rsi(第二个参数&to->context)放到栈顶, 栈顶指针 = &to->context，相当于上面保存当前正在运行的栈，这里切换到马上需要运行的栈地址
+"    cmp  $0, %rcx\n" // 判断第四个参数是否为0，是否需要恢复fpu
+"    je  2f\n" // 如果上面cmp为true跳到 "2:\n"
+"    ldmxcsr  (%rsp)\n" // 把rsp存的值(也就是to->context栈顶指针)加载到mxcsr寄存器
+"    fldcw  0x4(%rsp)\n" // 把rsp + 4的内容放到fpu控制器
 "2:\n"
-"    leaq  0x8(%rsp), %rsp\n"
+"    leaq  0x8(%rsp), %rsp\n" // rsp往下挪8字节(mxcsr 4字节 + fpu 4字节)
 "    popq  %r12  \n"
 "    popq  %r13  \n"
 "    popq  %r14  \n"
 "    popq  %r15  \n"
 "    popq  %rbx  \n"
 "    popq  %rbp  \n"
-"    popq  %r8\n"
+"    popq  %r8\n" // 这里pop出来的就是下一个tm需要被执行的地方(如果是个新tm，那就是在bthread_make_fcontext中设定的entry，也就是task_runner,如果是旧tm，那就是上一次被挂起时)
 "    movq  %rdx, %rax\n"
 "    movq  %rdx, %rdi\n"
 "    jmp  *%r8\n"

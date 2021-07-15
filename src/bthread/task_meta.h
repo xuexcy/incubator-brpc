@@ -116,6 +116,8 @@ public:
     ContextualStack* release_stack() {
         ContextualStack* tmp = stack;
         stack = NULL;
+        // 这里return tmp是为了让task_group去回收stack资源或者给其他tm
+        // stack的申请与释放都由tg执行，tm只是拥有它
         return tmp;
     }
 
