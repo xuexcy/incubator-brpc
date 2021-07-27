@@ -50,7 +50,7 @@ const static LocalStorage LOCAL_STORAGE_INIT = BTHREAD_LOCAL_STORAGE_INITIALIZER
 
 struct TaskMeta {
     // [Not Reset]
-    butil::atomic<ButexWaiter*> current_waiter;
+    butil::atomic<ButexWaiter*> current_waiter; // TODO(xcy)
     uint64_t current_sleep;
 
     // A builtin flag to mark if the thread is stopping.
@@ -89,7 +89,7 @@ struct TaskMeta {
     // bthread local storage, sync with tls_bls (defined in task_group.cpp)
     // when the bthread is created or destroyed.
     // DO NOT use this field directly, use tls_bls instead.
-    LocalStorage local_storage;
+    LocalStorage local_storage; // TODO(xcy)
 
 public:
     // Only initialize [Not Reset] fields, other fields will be reset in

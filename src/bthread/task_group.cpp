@@ -61,7 +61,7 @@ __thread TaskGroup* tls_task_group = NULL; // 线程内全局变量
 // Sync with TaskMeta::local_storage when a bthread is created or destroyed.
 // During running, the two fields may be inconsistent, use tls_bls as the
 // groundtruth.
-thread_local LocalStorage tls_bls = BTHREAD_LOCAL_STORAGE_INITIALIZER;
+thread_local LocalStorage tls_bls = BTHREAD_LOCAL_STORAGE_INITIALIZER; // TODO(xcy)
 
 // defined in bthread/key.cpp
 extern void return_keytable(bthread_keytable_pool_t*, KeyTable*);
@@ -348,8 +348,9 @@ void TaskGroup::task_runner(intptr_t skip_remained) {
         butex_wake_except(m->version_butex, 0);
 
         g->_control->_nbthreads << -1; // 任务执行结束，tg里面任务减1
-        g->set_remained(TaskGroup::_release_last_context, m); // 任务执行完了，清理任务的栈. TODO(xcy): 为什么不直接执行而是放到remained里面
-        ending_sched(&g); // 在tg的rq里找下一个task
+        g->set_remained(TaskGroup::_release_last_context, m); // 任务执行完了，清理任务的栈.
+        // 在ending_sched里面，当前tm的stack可能会交接给下一个tm，所以上面release_last_context需要放到set_remained里面，免得直接把stack释放了
+        ending_sched(&g); // 在tg的rq里找下一个task.
 
     } while (g->_cur_meta->tid != g->_main_tid); // 上面的ending_sched会一直寻找并执行下一个任务直到没有任务后回到main_task
 
@@ -360,12 +361,14 @@ void TaskGroup::task_runner(intptr_t skip_remained) {
 void TaskGroup::_release_last_context(void* arg) {
     TaskMeta* m = static_cast<TaskMeta*>(arg);
     if (m->stack_type() != STACK_TYPE_PTHREAD) {
-        return_stack(m->release_stack()/*may be NULL*/);
+        return_stack(m->release_stack()/*may be NULL*/); // 当为NULL时，说明stack已经交接给其他tm了
+        // 如果不为NULL，说明stack没有交接出去(没有tm任务需要执行了，tg去偷也没有偷到tm), 上面的task_runner的while循环会终止,回到main_tid
+        // 在一开始申请到的stack也就可以释放掉了，下一次再有任务来，tg被唤醒后重新申请stack
     } else {
         // it's _main_stack, don't return.
         m->set_stack(NULL);
     }
-    return_resource(get_slot(m->tid));
+    return_resource(get_slot(m->tid)); // TODO(xcy): 这里到底清理了什么?
 }
 
 int TaskGroup::start_foreground(TaskGroup** pg,
@@ -444,7 +447,7 @@ int TaskGroup::start_background(bthread_t* __restrict th,
     m->about_to_quit = false;
     m->fn = fn;
     m->arg = arg;
-    CHECK(m->stack == NULL); // 新建的tm是没有stack的
+    CHECK(m->stack == NULL); // 新建的tm是没有stack的, tg执行到它时会把上一个tm的stack给它，或者帮它申请一个stack
     m->attr = using_attr;
     m->local_storage = LOCAL_STORAGE_INIT;
     m->cpuwide_start_ns = start_ns;
@@ -490,7 +493,7 @@ int TaskGroup::join(bthread_t tid, void** return_value) {
         return EINVAL;
     }
     const uint32_t expected_version = get_version(tid);
-    while (*m->version_butex == expected_version) { // TODO(xuechengyun)
+    while (*m->version_butex == expected_version) { // 相等就表示tm没有执行完成
         if (butex_wait(m->version_butex, expected_version, NULL) < 0 &&
             errno != EWOULDBLOCK && errno != EINTR) {
             return errno;
@@ -506,7 +509,7 @@ bool TaskGroup::exists(bthread_t tid) {
     if (tid != 0) {  // tid of bthread is never 0.
         TaskMeta* m = address_meta(tid);
         if (m != NULL) {
-            return (*m->version_butex == get_version(tid));
+            return (*m->version_butex == get_version(tid)); // 当不相等时,说明tm已经执行完了(可能还有其他情况，比如被取消了)
         }
     }
     return false;
@@ -591,7 +594,7 @@ void TaskGroup::sched_to(TaskGroup** pg, TaskMeta* next_meta) {
     TaskMeta* const cur_meta = g->_cur_meta; // 当前的task_meta
     const int64_t now = butil::cpuwide_time_ns(); // 当前时间
     const int64_t elp_ns = now - g->_last_run_ns; // task_meta执行的时间
-    g->_last_run_ns = now;
+    g->_last_run_ns = now; // 下一个meta开始执行的时间
     cur_meta->stat.cputime_ns += elp_ns; // 当前task_meta累计执行时间
     if (cur_meta->tid != g->main_tid()) {
         g->_cumulated_cputime_ns += elp_ns; // task_group中task_meta的累计执行时间
@@ -625,6 +628,7 @@ void TaskGroup::sched_to(TaskGroup** pg, TaskMeta* next_meta) {
             }
 #ifndef NDEBUG
             else { // 两个bthread任务的stack不可能相同，除非两个都是pthread任务，是main_stack
+                // 只会在申请stack失败的时候，stack才会是main_stack
                 // else pthread_task is switching to another pthread_task, sc
                 // can only equal when they're both _main_stack
                 CHECK(cur_meta->stack == g->_main_stack);
@@ -642,7 +646,7 @@ void TaskGroup::sched_to(TaskGroup** pg, TaskMeta* next_meta) {
         RemainedFn fn = g->_last_context_remained;
         g->_last_context_remained = NULL;
         fn(g->_last_context_remained_arg);
-        g = tls_task_group;
+        g = tls_task_group; // 之所以在while循环，就是因为g会发生变动，变成另一个线程上的tg,新的tg可能还有last_context_remained
     }
 
     // Restore errno
@@ -753,7 +757,7 @@ struct SleepArgs {
 static void ready_to_run_from_timer_thread(void* arg) {
     CHECK(tls_task_group == NULL);
     const SleepArgs* e = static_cast<const SleepArgs*>(arg);
-    e->group->control()->choose_one_group()->ready_to_run_remote(e->tid); // TODO(xcy): 为什么要从tc里面选一个tg，而不是直接用这个tg
+    e->group->control()->choose_one_group()->ready_to_run_remote(e->tid);
 }
 
 void TaskGroup::_add_sleep_event(void* void_args) {
@@ -832,7 +836,7 @@ int TaskGroup::usleep(TaskGroup** pg, uint64_t timeout_us) {
 // Defined in butex.cpp
 bool erase_from_butex_because_of_interruption(ButexWaiter* bw);
 
-static int interrupt_and_consume_waiters(
+static int interrupt_and_consume_waiters( // TODO(xcy)
     bthread_t tid, ButexWaiter** pw, uint64_t* sleep_id) {
     TaskMeta* const m = TaskGroup::address_meta(tid);
     if (m == NULL) {
@@ -871,7 +875,7 @@ static int set_butex_waiter(bthread_t tid, ButexWaiter* w) {
 // by race conditions.
 // TODO: bthreads created by BTHREAD_ATTR_PTHREAD blocking on bthread_usleep()
 // can't be interrupted.
-int TaskGroup::interrupt(bthread_t tid, TaskControl* c) {
+int TaskGroup::interrupt(bthread_t tid, TaskControl* c) { // TODO(xcy)
     // Consume current_waiter in the TaskMeta, wake it up then set it back.
     ButexWaiter* w = NULL;
     uint64_t sleep_id = 0;

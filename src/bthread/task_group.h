@@ -149,7 +149,7 @@ public:
     // True iff current task is the one running run_main_task()
     bool is_current_main_task() const { return current_tid() == _main_tid; } // xcy_done: 是否是main_task
     // True iff current task is in pthread-mode.
-    bool is_current_pthread_task() const // xcy_done:当前任务时候是pthread_task(只有main_task才是在pthread并且main_task没有任何要执行的东西,它的fn是NULL)
+    bool is_current_pthread_task() const // xcy_done:当前任务是否是pthread_task(只有main_task或bthread申请不到stack的时候，才是在pthread并且main_task没有任何要执行的东西,它的fn是NULL)
     { return _cur_meta->stack == _main_stack; }
 
     // Active time in nanoseconds spent by this TaskGroup.

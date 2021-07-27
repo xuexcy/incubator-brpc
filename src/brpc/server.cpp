@@ -603,16 +603,17 @@ Acceptor* Server::BuildAcceptor() {
     return acceptor;
 }
 
+// 全局只执行一次，通过_status来标识,主要是一些协议、负载均衡算法、压缩算法的注册
 int Server::InitializeOnce() {
-    if (_status != UNINITIALIZED) {
+    if (_status != UNINITIALIZED) { // 已经初始化过了
         return 0;
     }
-    GlobalInitializeOrDie();
+    GlobalInitializeOrDie(); // 初始化失败就退出，如果失败会exit(1)
 
     if (_status != UNINITIALIZED) {
         return 0;
     }
-    if (_fullname_service_map.init(INITIAL_SERVICE_CAP) != 0) {
+    if (_fullname_service_map.init(INITIAL_SERVICE_CAP) != 0) { // TODO(xcy)
         LOG(ERROR) << "Fail to init _fullname_service_map";
         return -1;
     }
@@ -703,7 +704,7 @@ int Server::StartInternal(const butil::ip_t& ip,
                           const PortRange& port_range,
                           const ServerOptions *opt) {
     std::unique_ptr<Server, RevertServerStatus> revert_server(this);
-    if (_failed_to_set_max_concurrency_of_method) {
+    if (_failed_to_set_max_concurrency_of_method) { // TODO(xcy)
         _failed_to_set_max_concurrency_of_method = false;
         LOG(ERROR) << "previous call to MaxConcurrencyOf() was failed, "
             "fix it before starting server";
@@ -714,7 +715,7 @@ int Server::StartInternal(const butil::ip_t& ip,
         return -1;
     }
     const Status st = status();
-    if (st != READY) {
+    if (st != READY) { // 校验status
         if (st == RUNNING) {
             LOG(ERROR) << "Server[" << version() << "] is already running on "
                        << _listen_addr;
@@ -731,7 +732,7 @@ int Server::StartInternal(const butil::ip_t& ip,
         // may be the options for the last run or even bad options
         _options = ServerOptions();
     }
-
+    // TODO(xcy): options怎么看
     if (!_options.h2_settings.IsValid(true/*log_error*/)) {
         LOG(ERROR) << "Invalid h2_settings";
         return -1;
@@ -941,7 +942,7 @@ int Server::StartInternal(const butil::ip_t& ip,
         return -1;
     }
     _listen_addr.ip = ip;
-    for (int port = port_range.min_port; port <= port_range.max_port; ++port) {
+    for (int port = port_range.min_port; port <= port_range.max_port; ++port) { // 监听端口
         _listen_addr.port = port;
         butil::fd_guard sockfd(tcp_listen(_listen_addr));
         if (sockfd < 0) {
@@ -1169,7 +1170,7 @@ int Server::AddServiceInternal(google::protobuf::Service* service,
         return -1;
     }
     const google::protobuf::ServiceDescriptor* sd = service->GetDescriptor();
-    if (sd->method_count() == 0) {
+    if (sd->method_count() == 0) { // service中没有定义method，直接返回
         LOG(ERROR) << "service=" << sd->full_name()
                    << " does not have any method.";
         return -1;
@@ -1185,7 +1186,7 @@ int Server::AddServiceInternal(google::protobuf::Service* service,
         return -1;
     }
 
-    if (_fullname_service_map.seek(sd->full_name()) != NULL) {
+    if (_fullname_service_map.seek(sd->full_name()) != NULL) { // service_full_name冲突
         LOG(ERROR) << "service=" << sd->full_name() << " already exists";
         return -1;
     }
@@ -1214,7 +1215,7 @@ int Server::AddServiceInternal(google::protobuf::Service* service,
         mp.service = service;
         mp.method = md;
         mp.status = new MethodStatus;
-        _method_map[md->full_name()] = mp;
+        _method_map[md->full_name()] = mp; // 记录method_property
         if (is_idl_support && sd->name() != sd->full_name()/*has ns*/) {
             MethodProperty mp2 = mp;
             mp2.own_method_status = false;
@@ -1238,12 +1239,12 @@ int Server::AddServiceInternal(google::protobuf::Service* service,
     const ServiceProperty ss = {
         is_builtin_service, svc_opt.ownership, service, NULL };
     _fullname_service_map[sd->full_name()] = ss;
-    _service_map[sd->name()] = ss;
+    _service_map[sd->name()] = ss; // 记录service信息
     if (is_builtin_service) {
         ++_builtin_service_count;
     } else {
         if (_first_service == NULL) {
-            _first_service = service;
+            _first_service = service; // TODO(xcy): 为什么要记录第一个?记录下第一个添加到server中的service
         }
     }
 
@@ -1278,6 +1279,7 @@ int Server::AddServiceInternal(google::protobuf::Service* service,
         // respectively. When the URL is accessed, we extract the first
         // component, find the RestfulMap and do url matchings. Regular url
         // handling is not affected.
+        // 通过在service maps中添加 first_component到RestfulMap的映射来加快http url match
         for (size_t i = 0; i < mappings.size(); ++i) {
             const std::string full_method_name =
                 sd->full_name() + "." + mappings[i].method_name;
@@ -1360,12 +1362,12 @@ int Server::AddServiceInternal(google::protobuf::Service* service,
                     { false, SERVER_DOESNT_OWN_SERVICE, NULL, m };
                 _fullname_service_map[svc_name] = ss;
                 _service_map[svc_name] = ss;
-                ++_virtual_service_count;
+                ++_virtual_service_count; // 虚拟service数量加1 （因为是为了加快url match而主动添加的一个service，实际并不存在)
             }
         }
     }
 
-    if (tabbed) {
+    if (tabbed) { // TODO(xcy)
         if (_tab_info_list == NULL) {
             _tab_info_list = new TabInfoList;
         }
@@ -1400,7 +1402,7 @@ ServiceOptions::ServiceOptions()
 int Server::AddService(google::protobuf::Service* service,
                        ServiceOwnership ownership) {
     ServiceOptions options;
-    options.ownership = ownership;
+    options.ownership = ownership; // 设置ownership，除了用户主动添加的service，brpc也会自动添加一些，比如通过http读取bvar、一些性能统计数据等
     return AddServiceInternal(service, false, options);
 }
 

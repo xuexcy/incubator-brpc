@@ -94,12 +94,12 @@ struct ButexWaiter : public butil::LinkNode<ButexWaiter> {
 // non_pthread_task allocates this structure on stack and queue it in
 // Butex::waiters.
 struct ButexBthreadWaiter : public ButexWaiter {
-    TaskMeta* task_meta;
-    TimerThread::TaskId sleep_id;
+    TaskMeta* task_meta; // 待wait的tm
+    TimerThread::TaskId sleep_id; // 如果需要sleep，加入到timer_thread后得到的sleep_id
     WaiterState waiter_state;
-    int expected_value;
-    Butex* initial_butex;
-    TaskControl* control;
+    int expected_value; // butex_wait的期望值
+    Butex* initial_butex; // 真正被wait和wake的butex，被多个ButexBthreadWaiter共享
+    TaskControl* control; // tg, 全局唯一
 };
 
 // pthread_task or main_task allocates this structure on stack and queue it
@@ -116,9 +116,11 @@ struct BAIDU_CACHELINE_ALIGNMENT Butex { // TODO(xcy)
     Butex() {}
     ~Butex() {}
 
-    butil::atomic<int> value;
-    ButexWaiterList waiters;
-    internal::FastPthreadMutex waiter_lock;
+    butil::atomic<int> value; // butex_wait时用到的expected_value
+    ButexWaiterList waiters; // 链表，记录在该butex上挂起的bthread/pthread
+    internal::FastPthreadMutex waiter_lock; // 锁, butex_wait后需要把bthread挂到waiters上。
+    // wait过程:加锁 -> 判断value -> 挂起到 waiters -> 解锁。 没有锁的话，判断value完了以后，可能就有其他地方调用了butex_wake，导致wake信号丢失
+    // 也就是value判断和挂起waiters需要在同一个临界区，也就是waiter_lock
 };
 
 BAIDU_CASSERT(offsetof(Butex, value) == 0, offsetof_value_must_0);
@@ -172,16 +174,16 @@ extern BAIDU_THREAD_LOCAL TaskGroup* tls_task_group;
 inline int unsleep_if_necessary(ButexBthreadWaiter* w,
                                 TimerThread* timer_thread) {
     if (!w->sleep_id) {
-        return 0;
+        return 0; // 不需要unschedule
     }
     if (timer_thread->unschedule(w->sleep_id) > 0) {
         // the callback is running.
-        return -1;
+        return -1; // unschedule失败
     }
     w->sleep_id = 0;
-    return 0;
+    return 0; // unschedule成功
 }
-
+// TODO(xcy)
 // Use ObjectPool(which never frees memory) to solve the race between
 // butex_wake() and butex_destroy(). The race is as follows:
 //
@@ -242,7 +244,7 @@ inline int unsleep_if_necessary(ButexBthreadWaiter* w,
 void* butex_create() {
     Butex* b = butil::get_object<Butex>();
     if (b) {
-        return &b->value;
+        return &b->value; // 对使用者只需要知道value就够了，bthread根据value的地址通过container_of这个宏来重新获取Butex
     }
     return NULL;
 }
@@ -258,31 +260,31 @@ void butex_destroy(void* butex) {
 
 inline TaskGroup* get_task_group(TaskControl* c) {
     TaskGroup* g = tls_task_group;
-    return g ? g : c->choose_one_group();
+    return g ? g : c->choose_one_group(); // 如果当前线程没有tg就从tc中选一个
 }
 
-int butex_wake(void* arg) {
-    Butex* b = container_of(static_cast<butil::atomic<int>*>(arg), Butex, value);
+int butex_wake(void* arg) { // wake一个任务,注意只有"一个"
+    Butex* b = container_of(static_cast<butil::atomic<int>*>(arg), Butex, value); // 通过value在Butex结构中的偏移量计算出Butex的其实地址
     ButexWaiter* front = NULL;
     {
         BAIDU_SCOPED_LOCK(b->waiter_lock);
-        if (b->waiters.empty()) {
+        if (b->waiters.empty()) { // waiter list上没有任何需要wake的，直接返回
             return 0;
         }
-        front = b->waiters.head()->value();
-        front->RemoveFromList();
-        front->container.store(NULL, butil::memory_order_relaxed);
+        front = b->waiters.head()->value(); // 取出waiter list的head，下面wake这个front
+        front->RemoveFromList(); // 将front从waiter_list中移除
+        front->container.store(NULL, butil::memory_order_relaxed); // 将butex设置为NULL
     }
-    if (front->tid == 0) {
-        wakeup_pthread(static_cast<ButexPthreadWaiter*>(front));
+    if (front->tid == 0) { // 这是一个运行在pthread上的任务
+        wakeup_pthread(static_cast<ButexPthreadWaiter*>(front)); // 通过futex_wake唤醒一个任务
         return 1;
     }
     ButexBthreadWaiter* bbw = static_cast<ButexBthreadWaiter*>(front);
-    unsleep_if_necessary(bbw, get_global_timer_thread());
+    unsleep_if_necessary(bbw, get_global_timer_thread()); // 把tm从timer_thread中拿出来
     TaskGroup* g = tls_task_group;
-    if (g) {
+    if (g) { // 如果当前线程是tg，那就『立刻』在这个线程执行
         TaskGroup::exchange(&g, bbw->tid);
-    } else {
+    } else { // 如果当前线程不是tg，那就从tc中选一个来『准备』执行tm。 上面是立刻开始，这里是准备开始
         bbw->control->choose_one_group()->ready_to_run_remote(bbw->tid);
     }
     return 1;
@@ -319,6 +321,8 @@ int butex_wake_all(void* arg) {
         return nwakeup;
     }
     // We will exchange with first waiter in the end.
+    // 在将除了这个next任务之外的其他任务ready_to_run_general之后，如果 g == tls_task_group
+    // 那就直接在这个tg上执行next，也就是下面的 TaskGroup::exchange(&g, next->tid)
     ButexBthreadWaiter* next = static_cast<ButexBthreadWaiter*>(
         bthread_waiters.head()->value());
     next->RemoveFromList();
@@ -335,8 +339,8 @@ int butex_wake_all(void* arg) {
         g->ready_to_run_general(w->tid, true);
         ++nwakeup;
     }
-    if (saved_nwakeup != nwakeup) {
-        g->flush_nosignal_tasks_general();
+    if (saved_nwakeup != nwakeup) { // 除了next之外还有其他的任务被wakeup
+        g->flush_nosignal_tasks_general(); // 上面ready_to_run_general把任务又重新放到了tg的队列中,如果这句话不执行的话，任务需要在队列里面排队，这里flush一下是为了让其他tg来偷任务(比如可能有些tg正在休眠)
     }
     if (g == tls_task_group) {
         TaskGroup::exchange(&g, next->tid);
@@ -372,7 +376,7 @@ int butex_wake_except(void* arg, bthread_t excluded_bthread) {
         }
 
         if (excluded_waiter) {
-            b->waiters.Append(excluded_waiter);
+            b->waiters.Append(excluded_waiter); // 重新放到waiter list
         }
     }
 
@@ -390,7 +394,7 @@ int butex_wake_except(void* arg, bthread_t excluded_bthread) {
     }
     ButexBthreadWaiter* front = static_cast<ButexBthreadWaiter*>(
                 bthread_waiters.head()->value());
-
+    // 下面的实现和butex_wakeup_all不一样，具体原因我也不知道
     TaskGroup* g = get_task_group(front->control);
     const int saved_nwakeup = nwakeup;
     do {
@@ -408,6 +412,7 @@ int butex_wake_except(void* arg, bthread_t excluded_bthread) {
     return nwakeup;
 }
 
+// wake_up arg所在的list中的第一个任务，并将剩下的任务append到arg2所在的waiter list中
 int butex_requeue(void* arg, void* arg2) {
     Butex* b = container_of(static_cast<butil::atomic<int>*>(arg), Butex, value);
     Butex* m = container_of(static_cast<butil::atomic<int>*>(arg2), Butex, value);
@@ -469,7 +474,7 @@ inline bool erase_from_butex(ButexWaiter* bw, bool wakeup, WaiterState state) {
         // b can be NULL when the waiter is scheduled but queued.
         BAIDU_SCOPED_LOCK(b->waiter_lock);
         if (b == bw->container.load(butil::memory_order_relaxed)) {
-            bw->RemoveFromList();
+            bw->RemoveFromList(); // 把bw从butex的链表中移除
             bw->container.store(NULL, butil::memory_order_relaxed);
             if (bw->tid) {
                 static_cast<ButexBthreadWaiter*>(bw)->waiter_state = state;
@@ -478,11 +483,11 @@ inline bool erase_from_butex(ButexWaiter* bw, bool wakeup, WaiterState state) {
             break;
         }
     }
-    if (erased && wakeup) {
-        if (bw->tid) {
+    if (erased && wakeup) { // 如果移除成功并且需要wakeup(wakeup就是需要执行的意思)，那就准备开始执行
+        if (bw->tid) { // 如果有tid，那就是bthread，放到tg中执行
             ButexBthreadWaiter* bbw = static_cast<ButexBthreadWaiter*>(bw);
             get_task_group(bbw->control)->ready_to_run_general(bw->tid);
-        } else {
+        } else { // 如果没有牛就是在pthread上执行的，wakeup_pthread调用futex_wake
             ButexPthreadWaiter* pw = static_cast<ButexPthreadWaiter*>(bw);
             wakeup_pthread(pw);
         }
@@ -513,8 +518,8 @@ static void wait_for_butex(void* arg) {
         if (b->value.load(butil::memory_order_relaxed) != bw->expected_value) {
             bw->waiter_state = WAITER_STATE_UNMATCHEDVALUE;
         } else if (bw->waiter_state == WAITER_STATE_READY/*1*/ &&
-                   !bw->task_meta->interrupted) {
-            b->waiters.Append(bw);
+                   !bw->task_meta->interrupted) { // 除了waiter的状态,这里还需要判断tm的状态,也就是1、我还要不要wait? 2、这个tm还要不要执行?
+            b->waiters.Append(bw); // bw加到b->waiters这个链表上(这里相当于就是wait了)
             bw->container.store(b, butil::memory_order_relaxed);
             return;
         }
@@ -524,8 +529,8 @@ static void wait_for_butex(void* arg) {
     // TaskGroup::interrupt() no-op, there's no race between following code and
     // the two functions. The on-stack ButexBthreadWaiter is safe to use and
     // bw->waiter_state will not change again.
-    unsleep_if_necessary(bw, get_global_timer_thread());
-    tls_task_group->ready_to_run(bw->tid);
+    unsleep_if_necessary(bw, get_global_timer_thread()); // 把tm从timer_thread中拿出来，因为前面判断的状态不对,已经不需要sleep了
+    tls_task_group->ready_to_run(bw->tid); // 不需要wait，准备开始开始执行(如果需要wait前面肯定已经return了)
     // FIXME: jump back to original thread is buggy.
 
     // // Value unmatched or waiter is already woken up by TimerThread, jump
@@ -607,18 +612,20 @@ static int butex_wait_from_pthread(TaskGroup* g, Butex* b, int expected_value,
     return rc;
 }
 
+// 参考:https://blog.csdn.net/KIDGIN7439/article/details/106219059
 int butex_wait(void* arg, int expected_value, const timespec* abstime) {
-    Butex* b = container_of(static_cast<butil::atomic<int>*>(arg), Butex, value);
+    Butex* b = container_of(static_cast<butil::atomic<int>*>(arg), Butex, value); // arg必须是某个创建好的Butex中的value才行(使用container_of的前提条件)
     if (b->value.load(butil::memory_order_relaxed) != expected_value) {
         errno = EWOULDBLOCK;
         // Sometimes we may take actions immediately after unmatched butex,
         // this fence makes sure that we see changes before changing butex.
+        // TODO(xcy): 什么叫sometimes，这里什么也没干啊。是不是说这里没有unmatched也希望其他地方看到unmatched
         butil::atomic_thread_fence(butil::memory_order_acquire);
         return -1;
     }
     TaskGroup* g = tls_task_group;
-    if (NULL == g || g->is_current_pthread_task()) {
-        return butex_wait_from_pthread(g, b, expected_value, abstime);
+    if (NULL == g || g->is_current_pthread_task()) { // 当前任务运行在pthread上
+        return butex_wait_from_pthread(g, b, expected_value, abstime); // futex_wait
     }
     ButexBthreadWaiter bbw;
     // tid is 0 iff the thread is non-bthread
@@ -641,7 +648,7 @@ int butex_wait(void* arg, int expected_value, const timespec* abstime) {
             return -1;
         }
         bbw.sleep_id = get_global_timer_thread()->schedule(
-            erase_from_butex_and_wakeup, &bbw, *abstime);
+            erase_from_butex_and_wakeup, &bbw, *abstime); // wakeup任务放到timer_thread中
         if (!bbw.sleep_id) {  // TimerThread stopped.
             errno = ESTOP;
             return -1;
@@ -654,12 +661,15 @@ int butex_wait(void* arg, int expected_value, const timespec* abstime) {
 
     // release fence matches with acquire fence in interrupt_and_consume_waiters
     // in task_group.cpp to guarantee visibility of `interrupted'.
+    // TODO(xcy)
     bbw.task_meta->current_waiter.store(&bbw, butil::memory_order_release);
     g->set_remained(wait_for_butex, &bbw);
-    TaskGroup::sched(&g);
+    TaskGroup::sched(&g); // tg开始执行下一个tm，当前正在运行的tm通过上面的wait_for_butex开始wait
 
     // erase_from_butex_and_wakeup (called by TimerThread) is possibly still
     // running and using bbw. The chance is small, just spin until it's done.
+    // TODO(xcy): bbw使用情况。上面sched已经切走了任务，当执行到这里的时候，说明tm已经恢复执行了
+    // tm被wake后，需要把erase_from_butex_and_wakeup从timer_thread中拿出来
     BT_LOOP_WHEN(unsleep_if_necessary(&bbw, get_global_timer_thread()) < 0,
                  30/*nops before sched_yield*/);
 
@@ -688,7 +698,7 @@ int butex_wait(void* arg, int expected_value, const timespec* abstime) {
     } else if (is_interrupted) {
         errno = EINTR;
         return -1;
-    }
+    } // 代码执行到这里,说明tm重新执行,timeout、unmatched、interrupted都属于没有被正常的wakeup,所以返回-1
     return 0;
 }
 

@@ -122,7 +122,7 @@ struct GlobalExtensions {
         , ch_ketama_lb(CONS_HASH_LB_KETAMA)
         , constant_cl(0) {
     }
-    
+
 #ifdef BAIDU_INTERNAL
     BaiduNamingService bns;
 #endif
@@ -197,7 +197,7 @@ static int GetRunningServerCount(void*) {
 }
 
 // Update global stuff periodically.
-static void* GlobalUpdate(void*) {
+static void* GlobalUpdate(void*) { // TODO(xcy)
     // Expose variables.
     bvar::PassiveStatus<int64_t> var_iobuf_block_count(
         "iobuf_block_count", GetIOBufBlockCount, NULL);
@@ -305,14 +305,16 @@ static void BaiduStreamingLogHandler(google::protobuf::LogLevel level,
     CHECK(false) << filename << ':' << line << ' ' << message;
 }
 
-static void GlobalInitializeOrDieImpl() {
+static void GlobalInitializeOrDieImpl() { // 全局执行一次，初始化失败会退出程序
     //////////////////////////////////////////////////////////////////
     // Be careful about usages of gflags inside this function which //
     // may be called before main() only seeing gflags with default  //
     // values even if the gflags will be set after main().          //
     //////////////////////////////////////////////////////////////////
+    // 小心使用gflag，因为gflag的初始化是用户执行的，初始化可能在执行这个函数的后面，那此处将会拿到gflag的默认值
 
-    // Ignore SIGPIPE.
+    // Ignore SIGPIPE. 忽略sigpipe信号
+    // 对一个对端已经关闭的socket调用两次write，第二次将会生成SIGPIPE信号, 该信号默认结束进程，所以要忽略
     struct sigaction oldact;
     if (sigaction(SIGPIPE, NULL, &oldact) != 0 ||
             (oldact.sa_handler == NULL && oldact.sa_sigaction == NULL)) {
@@ -320,13 +322,13 @@ static void GlobalInitializeOrDieImpl() {
     }
 
     // Make GOOGLE_LOG print to comlog device
-    SetLogHandler(&BaiduStreamingLogHandler);
+    SetLogHandler(&BaiduStreamingLogHandler); // 修改log handler
 
     // Setting the variable here does not work, the profiler probably check
     // the variable before main() for only once.
     // setenv("TCMALLOC_SAMPLE_PARAMETER", "524288", 0);
 
-    // Initialize openssl library
+    // Initialize openssl library 初始化SSL
     SSL_library_init();
     // RPC doesn't require openssl.cnf, users can load it by themselves if needed
     SSL_load_error_strings();
@@ -334,19 +336,19 @@ static void GlobalInitializeOrDieImpl() {
         exit(1);
     }
 
-    // Defined in http_rpc_protocol.cpp
+    // Defined in http_rpc_protocol.cpp 初始化一些常规的字符串,比如LOG_ID("log-id")
     InitCommonStrings();
 
     // Leave memory of these extensions to process's clean up.
-    g_ext = new(std::nothrow) GlobalExtensions();
+    g_ext = new(std::nothrow) GlobalExtensions(); // TODO(xcy)
     if (NULL == g_ext) {
         exit(1);
     }
-    // Naming Services
+    // Naming Services 注册nameservice，bns是百度
 #ifdef BAIDU_INTERNAL
     NamingServiceExtension()->RegisterOrDie("bns", &g_ext->bns);
 #endif
-    NamingServiceExtension()->RegisterOrDie("file", &g_ext->fns);
+    NamingServiceExtension()->RegisterOrDie("file", &g_ext->fns); // TODO(xcy):看看register的实现
     NamingServiceExtension()->RegisterOrDie("list", &g_ext->lns);
     NamingServiceExtension()->RegisterOrDie("http", &g_ext->dns);
     NamingServiceExtension()->RegisterOrDie("https", &g_ext->dns_with_ssl);
@@ -355,7 +357,7 @@ static void GlobalInitializeOrDieImpl() {
     NamingServiceExtension()->RegisterOrDie("consul", &g_ext->cns);
     NamingServiceExtension()->RegisterOrDie("discovery", &g_ext->dcns);
 
-    // Load Balancers
+    // Load Balancers 负载均衡
     LoadBalancerExtension()->RegisterOrDie("rr", &g_ext->rr_lb);
     LoadBalancerExtension()->RegisterOrDie("wrr", &g_ext->wrr_lb);
     LoadBalancerExtension()->RegisterOrDie("random", &g_ext->randomized_lb);
@@ -365,7 +367,7 @@ static void GlobalInitializeOrDieImpl() {
     LoadBalancerExtension()->RegisterOrDie("c_ketama", &g_ext->ch_ketama_lb);
     LoadBalancerExtension()->RegisterOrDie("_dynpart", &g_ext->dynpart_lb);
 
-    // Compress Handlers
+    // Compress Handlers 压缩算法
     const CompressHandler gzip_compress =
         { GzipCompress, GzipDecompress, "gzip" };
     if (RegisterCompressHandler(COMPRESS_TYPE_GZIP, gzip_compress) != 0) {
@@ -382,13 +384,13 @@ static void GlobalInitializeOrDieImpl() {
         exit(1);
     }
 
-    // Protocols
+    // Protocols 注册协议
     Protocol baidu_protocol = { ParseRpcMessage,
                                 SerializeRequestDefault, PackRpcRequest,
                                 ProcessRpcRequest, ProcessRpcResponse,
                                 VerifyRpcRequest, NULL, NULL,
                                 CONNECTION_TYPE_ALL, "baidu_std" };
-    if (RegisterProtocol(PROTOCOL_BAIDU_STD, baidu_protocol) != 0) {
+    if (RegisterProtocol(PROTOCOL_BAIDU_STD, baidu_protocol) != 0) { // TODO(xcy): 如何注册
         exit(1);
     }
 
@@ -574,8 +576,8 @@ static void GlobalInitializeOrDieImpl() {
 
     std::vector<Protocol> protocols;
     ListProtocols(&protocols);
-    for (size_t i = 0; i < protocols.size(); ++i) {
-        if (protocols[i].process_response) {
+    for (size_t i = 0; i < protocols.size(); ++i) { // TODO(xcy):handler是给client用的
+        if (protocols[i].process_response) { // 连process_response都没有的protocol有锤子用
             InputMessageHandler handler;
             // `process_response' is required at client side
             handler.parse = protocols[i].parse;
@@ -584,17 +586,18 @@ static void GlobalInitializeOrDieImpl() {
             handler.verify = NULL;
             handler.arg = NULL;
             handler.name = protocols[i].name;
-            if (get_or_new_client_side_messenger()->AddHandler(handler) != 0) {
+            if (get_or_new_client_side_messenger()->AddHandler(handler) != 0) { // TODO(xcy):干啥用的
                 exit(1);
             }
         }
     }
 
-    // Concurrency Limiters
+    // Concurrency Limiters 并发限制
+    // TODO(xcy)
     ConcurrencyLimiterExtension()->RegisterOrDie("auto", &g_ext->auto_cl);
     ConcurrencyLimiterExtension()->RegisterOrDie("constant", &g_ext->constant_cl);
-    
-    if (FLAGS_usercode_in_pthread) {
+
+    if (FLAGS_usercode_in_pthread) { // TODO(xcy)
         // Optional. If channel/server are initialized before main(), this
         // flag may be false at here even if it will be set to true after
         // main(). In which case, the usercode pool will not be initialized
@@ -603,8 +606,8 @@ static void GlobalInitializeOrDieImpl() {
     }
 
     // We never join GlobalUpdate, let it quit with the process.
-    bthread_t th;
-    CHECK(bthread_start_background(&th, NULL, GlobalUpdate, NULL) == 0)
+    bthread_t th; // TODO(xcy): globalupdate是什么
+    CHECK(bthread_start_background(&th, NULL, GlobalUpdate, NULL) == 0) // 将GlobalUpdate放到bthread中执行, GlobalUpdate是个死循环
         << "Fail to start GlobalUpdate";
 }
 

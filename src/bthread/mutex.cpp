@@ -111,7 +111,7 @@ public:
 
     explicit ContentionProfiler(const char* name);
     ~ContentionProfiler();
-    
+
     void dump_and_destroy(SampledContention* c);
 
     // Write buffered data into resulting file. If `ending' is true, append
@@ -150,7 +150,7 @@ void ContentionProfiler::init_if_needed() {
         _init = true;
     }
 }
-    
+
 void ContentionProfiler::dump_and_destroy(SampledContention* c) {
     init_if_needed();
     // Categorize the contention.
@@ -172,7 +172,7 @@ void ContentionProfiler::dump_and_destroy(SampledContention* c) {
 
 void ContentionProfiler::flush_to_disk(bool ending) {
     BT_VLOG << "flush_to_disk(ending=" << ending << ")";
-    
+
     // Serialize contentions in _dedup_map into _disk_buf.
     if (!_dedup_map.empty()) {
         BT_VLOG << "dedup_map=" << _dedup_map.size();
@@ -319,7 +319,7 @@ bool ContentionProfilerStart(const char* filename) {
         ("contention_profiler_conflict_hash", get_nconflicthash, NULL);
     static bvar::DisplaySamplingRatio g_sampling_ratio_var(
         "contention_profiler_sampling_ratio", &g_cp_sl);
-    
+
     // Optimistic locking. A not-used ContentionProfiler does not write file.
     std::unique_ptr<ContentionProfiler> ctx(new ContentionProfiler(filename));
     {
@@ -573,7 +573,7 @@ BUTIL_FORCE_INLINE int pthread_mutex_unlock_impl(pthread_mutex_t* mutex) {
     // Don't change behavior of unlock when profiler is off.
     if (!g_cp || tls_inside_lock) {
         // This branch brings an issue that an entry created by
-        // add_pthread_contention_site may not be cleared. Thus we add a 
+        // add_pthread_contention_site may not be cleared. Thus we add a
         // 16-bit rolling version in the entry to find out such entry.
         return sys_pthread_mutex_unlock(mutex);
     }
@@ -658,22 +658,22 @@ inline int mutex_timedlock_contended(
 #ifdef BTHREAD_USE_FAST_PTHREAD_MUTEX
 namespace internal {
 
-int FastPthreadMutex::lock_contended() {
+int FastPthreadMutex::lock_contended() { // 竞争锁定
     butil::atomic<unsigned>* whole = (butil::atomic<unsigned>*)&_futex;
-    while (whole->exchange(BTHREAD_MUTEX_CONTENDED) & BTHREAD_MUTEX_LOCKED) {
-        if (futex_wait_private(whole, BTHREAD_MUTEX_CONTENDED, NULL) < 0
-            && errno != EWOULDBLOCK) {
+    while (whole->exchange(BTHREAD_MUTEX_CONTENDED) & BTHREAD_MUTEX_LOCKED) { // 逻辑与(&)
+        if (futex_wait_private(whole, BTHREAD_MUTEX_CONTENDED, NULL) < 0, // 已经锁上了就wait，等待拿到锁的线程wake它
+            && errno != EWOULDBLOCK) { // whole可能被其他线程改变，那wait就会失败，所以才需要while循环
             return errno;
         }
-    }
+    } // 没锁上(exchange前是0)变为锁上(exchange后是BTHREAD_MUTEX_CONTENDED)，退出while循环
     return 0;
 }
 
 void FastPthreadMutex::lock() {
     bthread::MutexInternal* split = (bthread::MutexInternal*)&_futex;
-    if (split->locked.exchange(1, butil::memory_order_acquire)) {
-        (void)lock_contended();
-    }
+    if (split->locked.exchange(1, butil::memory_order_acquire)) { // acquire和unlock()的release对应,保证读到的是release过的值
+        (void)lock_contended(); // 锁上了就调用。函数返回int，前面加(void)防止编译时提示未使用返回值
+    } // 没锁上就返回，值从{{0}, {0}, 0}没锁上的状态变为锁上状态BTHREAD_MUTEX_LOCKED {{1}, {0}, {0}}
 }
 
 bool FastPthreadMutex::try_lock() {

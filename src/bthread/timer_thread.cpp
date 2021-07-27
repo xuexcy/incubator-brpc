@@ -99,7 +99,7 @@ public:
     Task* consume_tasks();
 
 private:
-    internal::FastPthreadMutex _mutex; // TODO(xcy)
+    internal::FastPthreadMutex _mutex;
     // 链表中最先执行的那个任务的执行时间，这个任务可能在链表中间，到时间以后调度执行这个任务
     // 执行完以后这个任务还是放在链表里面(因为bucket不知道任务在链表的哪里，删除比较费时)
     // 执行完后任务的version会在初始值上+2，标记这个任务已经执行完，等待删除
@@ -229,7 +229,7 @@ TimerThread::Bucket::schedule(void (*fn)(void*), void* arg,
     return result;
 }
 
-TimerThread::TaskId TimerThread::schedule( // TODO(xuechengyun):找到schedule的调用者(1. tc在清理tg时，有个延时清理)
+TimerThread::TaskId TimerThread::schedule(
     void (*fn)(void*), void* arg, const timespec& abstime) {
     if (_stop.load(butil::memory_order_relaxed) || !_started) {
         // Not add tasks when TimerThread is about to stop.
@@ -292,7 +292,7 @@ bool TimerThread::Task::run_and_delete() {
     // This CAS is rarely contended, should be fast.
     if (version.compare_exchange_strong(
             expected_version, id_version + 1, butil::memory_order_relaxed)) {
-        fn(arg); // TODO(xuechengyun): 看下fn阻塞了会怎么样
+        fn(arg); // 这个地方可能会执行很长时间，从而影响下一个fn的执行时间
         // The release fence is paired with acquire fence in
         // TimerThread::unschedule to make changes of fn(arg) visible.
         version.store(id_version + 2, butil::memory_order_release);
@@ -398,7 +398,7 @@ void TimerThread::run() {
             // frequently, fortunately this is not true at most of time).
             {
                 BAIDU_SCOPED_LOCK(_mutex);
-                if (task1->run_time > _nearest_run_time) { // TODO(xuechengyun): 不太可能出现这种情况，稍后再看看
+                if (task1->run_time > _nearest_run_time) {
                     // a task is earlier than task1. We need to check buckets.
                     pull_again = true;
                     break;

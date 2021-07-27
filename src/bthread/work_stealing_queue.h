@@ -133,7 +133,7 @@ public:
             }
             *val = _buffer[t & (_capacity - 1)];
         // 当队列只剩最后一个元素且与上面pop竞争失败时,那就没有steal到task, while里面的条件会为false
-        // TODO(xuechengyun): 为什么steal失败后要while而不是直接return false
+        // 失败后继续while循环从队列的top拿数据，只有上面的 if (t >= b) 为false才能真正代表队列里面确实没有任何元素了
         } while (!_top.compare_exchange_strong(t, t + 1,
                                                butil::memory_order_seq_cst,
                                                butil::memory_order_relaxed));
