@@ -48,7 +48,7 @@ int make_blocking(int fd) {
 }
 
 int make_close_on_exec(int fd) {
-    return fcntl(fd, F_SETFD, FD_CLOEXEC);
+    return fcntl(fd, F_SETFD, FD_CLOEXEC); // TODO(xcy)
 }
 
 int make_no_delay(int socket) {

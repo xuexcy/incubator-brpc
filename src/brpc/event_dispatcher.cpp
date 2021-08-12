@@ -37,7 +37,7 @@ namespace brpc {
 
 DEFINE_int32(event_dispatcher_num, 1, "Number of event dispatcher");
 
-DEFINE_bool(usercode_in_pthread, false, 
+DEFINE_bool(usercode_in_pthread, false,
             "Call user's callback in pthreads, use bthreads otherwise");
 
 EventDispatcher::EventDispatcher()
@@ -47,8 +47,8 @@ EventDispatcher::EventDispatcher()
     , _consumer_thread_attr(BTHREAD_ATTR_NORMAL)
 {
 #if defined(OS_LINUX)
-    _epfd = epoll_create(1024 * 1024);
-    if (_epfd < 0) {
+    _epfd = epoll_create(1024 * 1024); // 创建epoll专用的文件描述符
+    if (_epfd < 0) { // 创建失败
         PLOG(FATAL) << "Fail to create epoll";
         return;
     }
@@ -63,9 +63,9 @@ EventDispatcher::EventDispatcher()
 #endif
     CHECK_EQ(0, butil::make_close_on_exec(_epfd));
 
-    _wakeup_fds[0] = -1;
-    _wakeup_fds[1] = -1;
-    if (pipe(_wakeup_fds) != 0) {
+    _wakeup_fds[0] = -1; // 写
+    _wakeup_fds[1] = -1; // 读
+    if (pipe(_wakeup_fds) != 0) { // 管道连接fd
         PLOG(FATAL) << "Fail to create pipe";
         return;
     }
@@ -73,7 +73,7 @@ EventDispatcher::EventDispatcher()
 
 EventDispatcher::~EventDispatcher() {
     Stop();
-    Join();
+    Join(); // join bthread
     if (_epfd >= 0) {
         close(_epfd);
         _epfd = -1;
@@ -85,7 +85,7 @@ EventDispatcher::~EventDispatcher() {
 }
 
 int EventDispatcher::Start(const bthread_attr_t* consumer_thread_attr) {
-    if (_epfd < 0) {
+    if (_epfd < 0) { // epoll在构造函数创建失败
 #if defined(OS_LINUX)
         LOG(FATAL) << "epoll was not created";
 #elif defined(OS_MACOSX)
@@ -93,9 +93,9 @@ int EventDispatcher::Start(const bthread_attr_t* consumer_thread_attr) {
 #endif
         return -1;
     }
-    
-    if (_tid != 0) {
-        LOG(FATAL) << "Already started this dispatcher(" << this 
+
+    if (_tid != 0) { // tid != 0说明已经Start过了
+        LOG(FATAL) << "Already started this dispatcher(" << this
                    << ") in bthread=" << _tid;
         return -1;
     }
@@ -111,7 +111,7 @@ int EventDispatcher::Start(const bthread_attr_t* consumer_thread_attr) {
     // is also a potential issue for consumer threads, using the same attr
     // should be a reasonable solution.
     int rc = bthread_start_background(
-        &_tid, &_consumer_thread_attr, RunThis, this);
+        &_tid, &_consumer_thread_attr, RunThis, this); // 在bthread上运行这个event_dispatcher
     if (rc) {
         LOG(FATAL) << "Fail to create epoll/kqueue thread: " << berror(rc);
         return -1;
@@ -129,7 +129,7 @@ void EventDispatcher::Stop() {
     if (_epfd >= 0) {
 #if defined(OS_LINUX)
         epoll_event evt = { EPOLLOUT,  { NULL } };
-        epoll_ctl(_epfd, EPOLL_CTL_ADD, _wakeup_fds[1], &evt);
+        epoll_ctl(_epfd, EPOLL_CTL_ADD, _wakeup_fds[1], &evt); // TODO(xcy)
 #elif defined(OS_MACOSX)
         struct kevent kqueue_event;
         EV_SET(&kqueue_event, _wakeup_fds[1], EVFILT_WRITE, EV_ADD | EV_ENABLE,
@@ -141,12 +141,12 @@ void EventDispatcher::Stop() {
 
 void EventDispatcher::Join() {
     if (_tid) {
-        bthread_join(_tid, NULL);
+        bthread_join(_tid, NULL); // 停掉bthread任务，也就是Start中的RunThis
         _tid = 0;
     }
 }
 
-int EventDispatcher::AddEpollOut(SocketId socket_id, int fd, bool pollin) {
+int EventDispatcher::AddEpollOut(SocketId socket_id, int fd, bool pollin) { // TODO(xcy)
     if (_epfd < 0) {
         errno = EINVAL;
         return -1;
@@ -190,7 +190,7 @@ int EventDispatcher::AddEpollOut(SocketId socket_id, int fd, bool pollin) {
     return 0;
 }
 
-int EventDispatcher::RemoveEpollOut(SocketId socket_id, 
+int EventDispatcher::RemoveEpollOut(SocketId socket_id,
                                     int fd, bool pollin) {
 #if defined(OS_LINUX)
     if (pollin) {
@@ -268,7 +268,7 @@ int EventDispatcher::RemoveConsumer(int fd) {
     return 0;
 }
 
-void* EventDispatcher::RunThis(void* arg) {
+void* EventDispatcher::RunThis(void* arg) { // 学习学习,函数是static，参数是this，方便bthread调用
     ((EventDispatcher*)arg)->Run();
     return NULL;
 }
@@ -284,7 +284,7 @@ void EventDispatcher::Run() {
             n = epoll_wait(_epfd, e, ARRAY_SIZE(e), -1);
         }
 #else
-        const int n = epoll_wait(_epfd, e, ARRAY_SIZE(e), -1);
+        const int n = epoll_wait(_epfd, e, ARRAY_SIZE(e), -1); // -1 表示无线阻塞
 #endif
 #elif defined(OS_MACOSX)
         struct kevent e[32];
@@ -361,7 +361,7 @@ void InitializeGlobalDispatchers() {
     }
     // This atexit is will be run before g_task_control.stop() because above
     // Start() initializes g_task_control by creating bthread (to run epoll/kqueue).
-    CHECK_EQ(0, atexit(StopAndJoinGlobalDispatchers));
+    CHECK_EQ(0, atexit(StopAndJoinGlobalDispatchers)); // 程序终止是调用stopandjoin
 }
 
 EventDispatcher& GetGlobalEventDispatcher(int fd) {

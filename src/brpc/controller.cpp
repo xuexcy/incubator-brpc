@@ -1162,7 +1162,7 @@ void Controller::IssueRPC(int64_t start_realtime_us) {
         if (span) {
             packet_size = user_packet_guard->EstimatedByteSize();
         }
-        rc = _current_call.sending_sock->Write(user_packet_guard, &wopt);
+        rc = _current_call.sending_sock->Write(user_packet_guard, &wopt); // 发送数据
     } else {
         packet_size = packet.size();
         rc = _current_call.sending_sock->Write(&packet, &wopt);
